@@ -1,0 +1,29 @@
+# Dependencies and build output
+node_modules/
+dist/
+src-tauri/target/
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+.local-secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local work, exports, and visual QA material
+outputs/
+work/
+.impeccable/
+design-qa.md
+qa-compare.html
+public/qa/
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+

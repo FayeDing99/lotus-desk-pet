@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "示例 OC",
+  "canvas": { "width": 1200, "height": 1500 },
+  "layers": [
+    { "id": "hair-back", "file": "layers/01_hair-back.png", "role": "hair-back", "zIndex": 10, "anchorX": 50, "anchorY": 35 },
+    { "id": "body", "file": "layers/02_body.png", "role": "body", "zIndex": 20, "anchorX": 50, "anchorY": 80 },
+    { "id": "head", "file": "layers/03_head.png", "role": "head", "zIndex": 30, "anchorX": 50, "anchorY": 48 },
+    { "id": "eyes", "file": "layers/04_eyes.png", "role": "eyes", "zIndex": 40, "anchorX": 50, "anchorY": 42 },
+    { "id": "mouth", "file": "layers/05_mouth.png", "role": "mouth", "zIndex": 42, "anchorX": 50, "anchorY": 51 },
+    { "id": "hair-front", "file": "layers/06_hair-front.png", "role": "hair-front", "zIndex": 50, "anchorX": 50, "anchorY": 34 }
+  ]
+}

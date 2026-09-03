@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "荷间小主人",
+  "version": "0.1.0",
+  "identifier": "com.local.lotus-desk-pet",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "荷间小主人",
+        "width": 560,
+        "height": 700,
+        "minWidth": 430,
+        "minHeight": 540,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "shadow": false,
+        "skipTaskbar": true,
+        "center": true
+      }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ5MzdDRERFREQ5MUMyQjcKUldTM3dwSGQzczAzU1FTYTh2d1Zvc3NkWjJucTNnS2ZITms4aEJYRWc5STJFU0Y1NlByaG9YQ0IK",
+      "endpoints": [
+        "https://github.com/FayeDing99/lotus-desk-pet/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
