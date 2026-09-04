@@ -9,23 +9,31 @@ import "@phosphor-icons/web/regular";
 import type dialogueShape from "../public/dialogue.json";
 import { loadAnimationPack, packSummary, parseAnimationFolder, saveAnimationPack, type OCAnimationPack } from "./animation-pack";
 import {
+  INVENTORY_ITEM_KEYS,
+  PROP_ITEM_KEYS,
+  SNACK_ITEM_KEYS,
   defaultOCProfile,
   fileToDataUrl,
   loadOCImage,
   loadOCProfile,
+  normalizeInventoryCatalog,
   saveOCImage,
   saveOCProfile,
+  type InventoryCatalog,
+  type InventoryItemKey,
   type OCPack,
   type OCProfile,
 } from "./oc";
-import { generateOCLine, providerDefaults } from "./llm";
-import { DAILY_POINT_CAP, affectionLabel, applyElapsedDecay, awardInteractionPoint, loadPetState, savePetState, type PetState } from "./state";
+import { describeLLMError, generateOCLine, providerDefaults } from "./llm";
+import { affectionLabel, applyElapsedDecay, loadPetState, savePetState, type PetState } from "./state";
 import { fetchWeather, type WeatherContext } from "./weather";
 import { findAppUpdate, installAppUpdate, isDesktopRuntime, type DownloadEvent, type Update } from "./updater";
 import "./styles.css";
 
-type PanelName = "dialogue" | "status" | "wallet" | "story" | null;
-type FoodKey = keyof PetState["inventory"];
+type PanelKey = "dialogue" | "status" | "wallet" | "story";
+type PanelName = PanelKey | null;
+type PanelLayout = { left: number; top: number; width: number; height: number };
+type ItemKey = InventoryItemKey;
 type DialogueLibrary = typeof dialogueShape;
 
 const library = await fetch("/dialogue.json").then(async (response) => {
@@ -39,18 +47,61 @@ if (!app) throw new Error("找不到桌宠挂载点");
 const icon = (name: string) => `<i class="ph ph-${name}" aria-hidden="true"></i>`;
 const icons = {
   chat: icon("chat-circle-dots"), status: icon("heartbeat"), wallet: icon("basket"), story: icon("notebook"),
+  tease: icon("smiley-wink"),
   apple: icon("plant"), cookie: icon("cookie"), parfait: icon("ice-cream"), heart: icon("heart"),
-  satiety: icon("bowl-food"), energy: icon("sparkle"), affection: icon("flower-lotus"), points: icon("seal-check"),
+  satiety: icon("bowl-food"), energy: icon("sparkle"), affection: icon("flower-lotus"),
   close: icon("x"), send: icon("paper-plane-tilt"), upload: icon("upload-simple"), reset: icon("arrow-counter-clockwise"),
   export: icon("download-simple"), import: icon("file-arrow-up"),
   cloud: icon("cloud-sun"), key: icon("key"), test: icon("plugs-connected"),
   layers: icon("stack"), folder: icon("folder-open"),
   update: icon("arrows-clockwise"),
+  edit: icon("sliders-horizontal"),
 };
+
+const scriptEditorMarkup = library.scenarios.map((scenario) => `
+  <details class="script-row" data-script-row="${scenario.key}">
+    <summary><span>${icon("leaf")}<b>${scenario.label}</b></span><small>${scenario.hint}</small></summary>
+    <label><span class="sr-only">${scenario.label}会说的话，每行一句</span><textarea data-script-key="${scenario.key}" rows="3" placeholder="每行一句；留空时使用内置话本"></textarea></label>
+  </details>`).join("");
+
+const itemIcons: Record<ItemKey, string> = {
+  apple: icons.apple,
+  cookie: icons.cookie,
+  parfait: icons.parfait,
+  umbrella: icon("umbrella-simple"),
+  charm: icon("flower-lotus"),
+  sword: icon("sword"),
+};
+
+const inventoryCardMarkup = (key: ItemKey) => `
+  <article class="inventory-card" data-item-card="${key}">
+    ${itemIcons[key]}
+    <div class="inventory-card-copy"><strong data-item-name="${key}"></strong><span data-item-effects="${key}"></span></div>
+    <button class="inventory-use-button" type="button" data-item-use="${key}"></button>
+  </article>`;
+
+const inventoryEditorRow = (key: ItemKey, fallbackLabel: string) => `
+  <details class="inventory-editor-row" data-item-editor="${key}">
+    <summary><span>${icon("leaf")}<b data-item-editor-name="${key}">${fallbackLabel}</b></span>${icon("caret-down")}</summary>
+    <div class="inventory-editor-fields">
+      <label>名称<input data-item-field="name" maxlength="20" /></label>
+      <fieldset><legend>使用后的属性变化</legend><div class="inventory-effect-grid">
+        <label>饱腹<input type="number" data-item-field="satiety" min="-100" max="100" step="1" /></label>
+        <label>心情<input type="number" data-item-field="mood" min="-100" max="100" step="1" /></label>
+        <label>精力<input type="number" data-item-field="energy" min="-100" max="100" step="1" /></label>
+        <label>亲密<input type="number" data-item-field="affection" min="-100" max="100" step="1" /></label>
+      </div></fieldset>
+      <label class="inventory-lines-field">使用后可能会说的话<textarea data-item-field="lines" rows="3" maxlength="600" placeholder="每行一句；使用时随机选一句"></textarea></label>
+    </div>
+  </details>`;
+
+const inventoryEditorMarkup = `
+  <section class="inventory-editor-group"><h3>${icon("bowl-food")}点心栏</h3>${SNACK_ITEM_KEYS.map((key, index) => inventoryEditorRow(key, `点心 ${index + 1}`)).join("")}</section>
+  <section class="inventory-editor-group"><h3>${icon("backpack")}道具栏</h3>${PROP_ITEM_KEYS.map((key, index) => inventoryEditorRow(key, `道具 ${index + 1}`)).join("")}</section>`;
 
 app.innerHTML = `
   <main class="pet-window" aria-label="荷间小主人桌宠" data-pet-window>
-    <section class="speech-sheet is-visible" data-bubble aria-live="polite">
+    <section class="speech-sheet" data-bubble aria-live="polite" hidden>
       <img class="speech-plate" src="${speechBubbleUrl}" alt="" aria-hidden="true" />
       <p class="speech-text" data-bubble-text>要一起喝杯茶吗？</p>
     </section>
@@ -64,46 +115,53 @@ app.innerHTML = `
         </span>
       </button>
       <span class="click-bloom" data-click-bloom aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-      <span class="point-pop" data-point-pop aria-hidden="true">+1</span>
     </div>
 
     <nav class="action-wheel" data-wheel aria-label="桌宠功能" hidden>
       <span class="wheel-ripple" aria-hidden="true"></span>
       <button type="button" data-action="dialogue" data-direction="top">${icons.chat}<span>聊天</span></button>
-      <button type="button" data-action="status" data-direction="right">${icons.status}<span>状态</span></button>
-      <button type="button" data-action="wallet" data-direction="bottom">${icons.wallet}<span>荷包</span></button>
-      <button type="button" data-action="story" data-direction="left">${icons.story}<span>话本</span></button>
+      <button type="button" data-action="status" data-direction="upper-right">${icons.status}<span>状态</span></button>
+      <button type="button" data-action="wallet" data-direction="lower-right">${icons.wallet}<span>荷包</span></button>
+      <button type="button" data-action="story" data-direction="lower-left">${icons.story}<span>话本</span></button>
+      <button type="button" data-action="tease" data-direction="upper-left">${icons.tease}<span>调戏</span></button>
     </nav>
 
-    <section class="status-cluster floating-panel" data-status-panel aria-label="桌宠状态" hidden>
-      <header><h2 data-level-heading>Lv.1 陌生</h2><button type="button" class="panel-close" data-close-panel aria-label="关闭状态">${icons.close}</button></header>
+    <section class="status-cluster floating-panel" data-status-panel data-panel-key="status" aria-label="桌宠状态" hidden>
+      <header data-panel-drag-handle title="拖动弹框"><h2 data-level-heading>Lv.1 陌生</h2><button type="button" class="panel-close" data-close-panel aria-label="关闭状态">${icons.close}</button></header>
       <div class="status-values">
         <div>${icons.heart}<span>心情</span><output data-value="mood">82</output></div>
         <div>${icons.satiety}<span>饱腹</span><output data-value="satiety">68</output></div>
         <div>${icons.energy}<span>精力</span><output data-value="energy">74</output></div>
         <div>${icons.affection}<span>亲密</span><output data-affection>0</output></div>
       </div>
-      <footer>${icons.points}<span>今日 <b data-daily-points>0</b>/${DAILY_POINT_CAP}</span><span>荷露 <b data-points>0</b></span></footer>
     </section>
 
-    <form class="chat-dock floating-panel" data-dialogue-form aria-label="和桌宠聊天" hidden>
+    <form class="chat-dock floating-panel" data-dialogue-form data-panel-key="dialogue" aria-label="和桌宠聊天" hidden>
+      <span class="panel-drag-grip" data-panel-drag-handle title="拖动聊天框">${icon("dots-six-vertical")}</span>
       <label class="sr-only" for="pet-message">输入想说的话</label>
-      <input id="pet-message" maxlength="80" autocomplete="off" placeholder="和她说点什么…" />
+      <input id="pet-message" maxlength="80" autocomplete="off" placeholder="和 TA 说点什么…" />
       <button type="submit" aria-label="发送">${icons.send}</button>
     </form>
 
-    <section class="wallet-panel floating-panel" data-wallet-panel aria-label="荷包与点心" hidden>
-      <header><div><h2>荷包</h2><p data-wallet-note>点心可以购买，也可以直接投喂。</p></div><button type="button" class="panel-close" data-close-panel aria-label="关闭荷包">${icons.close}</button></header>
-      <div class="wallet-balance">${icons.points}<span>荷露</span><strong data-wallet-points>0</strong></div>
-      <div class="food-list">
-        <article>${icons.apple}<div><strong>青苹果</strong><span>清甜 · 饱腹 +12</span></div><b>×<span data-food-count="apple">0</span></b><div class="food-actions"><button type="button" data-food="apple" data-operation="feed">喂食</button><button type="button" data-food="apple" data-operation="buy">5 荷露</button></div></article>
-        <article>${icons.cookie}<div><strong>莲花酥</strong><span>酥香 · 心情 +5</span></div><b>×<span data-food-count="cookie">0</span></b><div class="food-actions"><button type="button" data-food="cookie" data-operation="feed">喂食</button><button type="button" data-food="cookie" data-operation="buy">8 荷露</button></div></article>
-        <article>${icons.parfait}<div><strong>草莓芭菲</strong><span>特别奖励 · 心情 +12</span></div><b>×<span data-food-count="parfait">0</span></b><div class="food-actions"><button type="button" data-food="parfait" data-operation="feed">喂食</button><button type="button" data-food="parfait" data-operation="buy">15 荷露</button></div></article>
+    <section class="wallet-panel floating-panel" data-wallet-panel data-panel-key="wallet" aria-label="荷包与点心道具" hidden>
+      <header data-panel-drag-handle title="拖动弹框"><div><h2>荷包</h2></div><div class="wallet-header-actions"><button type="button" class="wallet-edit-button" data-edit-inventory aria-expanded="false">${icons.edit}<span>编辑</span></button><button type="button" class="panel-close" data-close-panel aria-label="关闭荷包">${icons.close}</button></div></header>
+      <div class="inventory-tabs" role="tablist" aria-label="荷包分类">
+        <button type="button" role="tab" data-inventory-tab="snack" aria-selected="true">${icon("bowl-food")}点心栏</button>
+        <button type="button" role="tab" data-inventory-tab="prop" aria-selected="false">${icon("backpack")}道具栏</button>
       </div>
+      <div class="inventory-sections">
+        <section class="inventory-group" data-inventory-section="snack"><div class="food-list">${SNACK_ITEM_KEYS.map(inventoryCardMarkup).join("")}</div></section>
+        <section class="inventory-group" data-inventory-section="prop" hidden><div class="food-list">${PROP_ITEM_KEYS.map(inventoryCardMarkup).join("")}</div></section>
+      </div>
+      <form class="inventory-editor" data-inventory-editor hidden>
+        <div class="inventory-editor-heading"><strong>自定义点心、道具与台词</strong><small>保存后会跟随 OC 话本一起导出。</small></div>
+        <div class="inventory-editor-list">${inventoryEditorMarkup}</div>
+        <button class="inventory-save-button" type="submit">保存荷包设定</button>
+      </form>
     </section>
 
-    <section class="story-panel floating-panel" data-story-panel aria-label="OC 性格话本" hidden>
-      <header><div><h2>OC 话本</h2><p>形象、性格和说话方式都收在这里。</p></div><button type="button" class="panel-close" data-close-panel aria-label="关闭话本">${icons.close}</button></header>
+    <section class="story-panel floating-panel" data-story-panel data-panel-key="story" aria-label="OC 性格话本" hidden>
+      <header data-panel-drag-handle title="拖动弹框"><div><h2>OC 话本</h2><p>形象、性格和说话方式都收在这里。</p></div><button type="button" class="panel-close" data-close-panel aria-label="关闭话本">${icons.close}</button></header>
       <form data-story-form>
         <div class="story-scroll">
           <label class="image-drop" data-image-drop tabindex="0">${icons.upload}<span><strong>更换 OC 图片</strong><small>PNG / WebP，可拖入</small></span><input type="file" accept="image/png,image/webp" data-character-file hidden /></label>
@@ -112,16 +170,22 @@ app.innerHTML = `
             <button type="button" class="clear-animation" data-clear-animation hidden>改用单图</button>
           </div>
           <div class="field-pair"><label>OC 名字<input name="name" maxlength="24" /></label><label>如何称呼你<input name="addressName" maxlength="16" /></label></div>
-          <label>性格标签<input name="personality" maxlength="80" placeholder="温柔、安静、有一点俏皮" /></label>
-          <label>说话语气<input name="tone" maxlength="120" /></label>
-          <label>口头禅<textarea name="catchphrases" rows="2" placeholder="一行一句"></textarea></label>
-          <label>关键词回复<textarea name="keywordReplies" rows="3" placeholder="关键词 = 回复一 | 回复二"></textarea></label>
+          <label>OC 人设<textarea name="persona" rows="5" maxlength="1600" placeholder="写下身份、经历、性格、喜好、关系和表达习惯。启用大模型后，会与用户消息一起作为回答依据。"></textarea></label>
+          <div class="field-pair"><label>自称<input name="selfReference" maxlength="16" placeholder="例如：我、本小姐、在下" /></label><label>口头禅<textarea name="catchphrases" rows="2" placeholder="每行一句"></textarea></label></div>
           <div class="range-grid">
-            <label>大小 <output data-range-output="imageScale">100%</output><input type="range" name="imageScale" min="70" max="135" step="1" /></label>
+            <label>大小 <output data-range-output="imageScale">100%</output><input type="range" name="imageScale" min="40" max="135" step="1" /></label>
             <label>左右 <output data-range-output="imageX">0</output><input type="range" name="imageX" min="-20" max="20" step="1" /></label>
             <label>上下 <output data-range-output="imageY">0</output><input type="range" name="imageY" min="-20" max="20" step="1" /></label>
           </div>
-          <label class="frequency-field">主动说话间隔 <span><input type="number" name="proactiveMinutes" min="10" max="120" step="5" /> 分钟</span></label>
+          <section class="rhythm-settings" aria-labelledby="rhythm-title">
+            <h3 id="rhythm-title">陪伴节奏</h3>
+            <label class="frequency-field">主动说话间隔 <span><input type="number" name="proactiveMinutes" min="10" max="120" step="5" /> 分钟</span></label>
+            <label class="reminder-row"><span><strong>久坐提醒</strong><small>连续一段时间没有互动时提醒活动</small></span><span class="reminder-controls"><input type="number" name="sedentaryMinutes" min="20" max="240" step="10" /><em>分钟</em><input type="checkbox" name="sedentaryEnabled" aria-label="启用久坐提醒" /></span></label>
+          </section>
+          <details class="script-settings">
+            <summary>${icon("book-open-text")}<span><strong>话本 · TA 可能说的话</strong><small>按场景编辑，每行一句</small></span>${icon("caret-down")}</summary>
+            <div class="script-list">${scriptEditorMarkup}</div>
+          </details>
           <details class="model-settings" data-model-settings>
             <summary>${icons.cloud}<span>大模型与实时内容</span><small data-connection-badge>未启用</small></summary>
             <div class="model-settings-body">
@@ -133,8 +197,12 @@ app.innerHTML = `
               <label>接口地址<input name="llmBaseUrl" inputmode="url" autocomplete="off" /></label>
               <label>API Key（仅本次运行）<span class="secret-field">${icons.key}<input type="password" data-api-key autocomplete="off" placeholder="留空则读取系统环境变量" /></span></label>
               <label class="ratio-field">待机内容 <span><input type="range" name="aiIdleRatio" min="0" max="100" step="10" /><output data-range-output="aiIdleRatio">50% 模型</output></span></label>
-              <label class="toggle-row"><span><strong>实时天气</strong><small>用于天气提醒和模型上下文</small></span><input type="checkbox" name="weatherEnabled" /></label>
-              <label>天气城市<input name="weatherCity" autocomplete="off" placeholder="例如：杭州、西安、New York" /></label>
+              <section class="weather-settings" aria-labelledby="weather-title">
+                <h3 id="weather-title">天气</h3>
+                <label class="weather-toggle"><input type="checkbox" name="weatherEnabled" /><span>根据天气说话、更新实时内容</span></label>
+                <label>城市 <small>填一次就好，例如「杭州」「New York」</small><span class="weather-query-row"><input name="weatherCity" autocomplete="off" placeholder="未设置" /><button type="button" data-query-weather>查询并保存</button></span></label>
+                <p class="weather-status" data-weather-status>还没有天气数据。</p>
+              </section>
               <div class="connection-row"><button type="button" data-test-api>${icons.test}<span>测试连接</span></button><p data-connection-status>密钥不会写入话本或导出文件。</p></div>
             </div>
           </details>
@@ -145,6 +213,7 @@ app.innerHTML = `
         </div>
         <footer class="story-actions">
           <button type="button" data-reset-image>${icons.reset}<span>原图</span></button>
+          <button type="button" data-reset-panels>${icons.reset}<span>还原位置</span></button>
           <button type="button" data-export-oc>${icons.export}<span>导出</span></button>
           <label>${icons.import}<span>导入</span><input type="file" accept="application/json" data-import-oc hidden /></label>
           <button class="primary-action" type="submit">保存话本</button>
@@ -155,12 +224,24 @@ app.innerHTML = `
 
 let state: PetState = applyElapsedDecay(loadPetState());
 let profile: OCProfile = loadOCProfile();
+let attachedUiScale = profile.imageScale;
 let activePanel: PanelName = null;
 let bubbleTimer: number | undefined;
+let attachedUiTimer: number | undefined;
+let panelGesture: {
+  key: PanelKey;
+  pointerId: number;
+  mode: "move" | "resize";
+  edges: { top: boolean; right: boolean; bottom: boolean; left: boolean };
+  startX: number;
+  startY: number;
+  layout: PanelLayout;
+} | null = null;
 let ambientTimer: number | undefined;
+let sedentaryTimer: number | undefined;
 let livingTimer: number | undefined;
 let weatherTimer: number | undefined;
-let dragStart: { x: number; y: number; left: number; top: number } | null = null;
+let dragStart: { x: number; y: number; left: number; top: number; dialogueLayout?: PanelLayout } | null = null;
 let dragged = false;
 let nativeDragStarted = false;
 let customImageDataUrl: string | null = await loadOCImage();
@@ -169,8 +250,12 @@ let currentWeather: WeatherContext | null = null;
 let llmInFlight = false;
 let availableUpdate: Update | null = null;
 let updateInFlight = false;
+let lastInteractionAt = Date.now();
+let teaseStreak = 0;
+let lastTeaseAt = 0;
 
 const petWindow = app.querySelector<HTMLElement>("[data-pet-window]")!;
+const bubble = app.querySelector<HTMLElement>("[data-bubble]")!;
 const bubbleText = app.querySelector<HTMLElement>("[data-bubble-text]")!;
 const pet = app.querySelector<HTMLButtonElement>("[data-pet]")!;
 const petLayer = app.querySelector<HTMLElement>("[data-pet-layer]")!;
@@ -182,9 +267,10 @@ const statusPanel = app.querySelector<HTMLElement>("[data-status-panel]")!;
 const dialogueForm = app.querySelector<HTMLFormElement>("[data-dialogue-form]")!;
 const messageInput = dialogueForm.querySelector<HTMLInputElement>("input")!;
 const walletPanel = app.querySelector<HTMLElement>("[data-wallet-panel]")!;
+const inventoryEditor = app.querySelector<HTMLFormElement>("[data-inventory-editor]")!;
+const inventoryEditButton = app.querySelector<HTMLButtonElement>("[data-edit-inventory]")!;
 const storyPanel = app.querySelector<HTMLElement>("[data-story-panel]")!;
 const storyForm = app.querySelector<HTMLFormElement>("[data-story-form]")!;
-const pointPop = app.querySelector<HTMLElement>("[data-point-pop]")!;
 const clickBloom = app.querySelector<HTMLElement>("[data-click-bloom]")!;
 const apiKeyInput = app.querySelector<HTMLInputElement>("[data-api-key]")!;
 const connectionStatus = app.querySelector<HTMLElement>("[data-connection-status]")!;
@@ -195,12 +281,38 @@ const animationStatus = app.querySelector<HTMLElement>("[data-animation-status]"
 const clearAnimationButton = app.querySelector<HTMLButtonElement>("[data-clear-animation]")!;
 const updateStatus = app.querySelector<HTMLElement>("[data-update-status]")!;
 const updateButton = app.querySelector<HTMLButtonElement>("[data-check-update]")!;
-
-const foodDetails: Record<FoodKey, { name: string; satiety: number; mood: number; price: number }> = {
-  apple: { name: "青苹果", satiety: 12, mood: 2, price: 5 },
-  cookie: { name: "莲花酥", satiety: 8, mood: 5, price: 8 },
-  parfait: { name: "草莓芭菲", satiety: 18, mood: 12, price: 15 },
+const weatherStatus = app.querySelector<HTMLElement>("[data-weather-status]")!;
+const weatherButton = app.querySelector<HTMLButtonElement>("[data-query-weather]")!;
+const panelElements: Record<PanelKey, HTMLElement> = {
+  dialogue: dialogueForm,
+  status: statusPanel,
+  wallet: walletPanel,
+  story: storyPanel,
 };
+
+const PANEL_LAYOUT_KEY = "lotus-desk-pet/panel-layouts/v1";
+const panelMinimums: Record<PanelKey, { width: number; height: number }> = {
+  dialogue: { width: 260, height: 48 },
+  status: { width: 220, height: 140 },
+  wallet: { width: 260, height: 160 },
+  story: { width: 320, height: 180 },
+};
+
+function loadPanelLayouts(): Partial<Record<PanelKey, PanelLayout>> {
+  try {
+    const value = JSON.parse(localStorage.getItem(PANEL_LAYOUT_KEY) ?? "null") as Partial<Record<PanelKey, Partial<PanelLayout>>> | null;
+    if (!value || typeof value !== "object") return {};
+    return Object.fromEntries((Object.keys(panelElements) as PanelKey[]).flatMap((key) => {
+      const layout = value[key];
+      return layout && [layout.left, layout.top, layout.width, layout.height].every((part) => typeof part === "number" && Number.isFinite(part))
+        ? [[key, layout as PanelLayout]] : [];
+    })) as Partial<Record<PanelKey, PanelLayout>>;
+  } catch {
+    return {};
+  }
+}
+
+let panelLayouts = loadPanelLayouts();
 
 const randomFrom = (items: readonly string[]) => items[Math.floor(Math.random() * items.length)]!;
 const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
@@ -288,6 +400,139 @@ function playPetReaction(kind: "poke" | "happy") {
   replayClass(clickBloom, kind === "poke" ? "is-poke-blooming" : "is-blooming", 900);
 }
 
+function positionAttachedUi() {
+  const windowRect = petWindow.getBoundingClientRect();
+  const stageRect = characterStage.getBoundingClientRect();
+  if (!windowRect.width || !windowRect.height || !stageRect.width || !stageRect.height) return;
+
+  const stageLeft = stageRect.left - windowRect.left;
+  const stageTop = stageRect.top - windowRect.top;
+  const visibleLeft = stageLeft + stageRect.width * 0.07;
+  const visibleRight = stageLeft + stageRect.width * 0.94;
+  const visibleTop = stageTop + stageRect.height * 0.31;
+  const visibleBottom = stageTop + stageRect.height * 0.91;
+
+  // The speech plate's tail sits at roughly 31% of its width. Point it at the
+  // top-left side of the character's head instead of positioning it by viewport.
+  const bubbleWidth = clampBetween(windowRect.width * (0.35 + attachedUiScale * 0.045), 218, 286);
+  const bubbleHeight = bubbleWidth / 2.72;
+  const speechTargetX = stageLeft + stageRect.width * 0.34;
+  const speechTargetY = visibleTop - 4;
+  const bubbleLeft = clampBetween(speechTargetX - bubbleWidth * 0.31, 8, windowRect.width - bubbleWidth - 8);
+  const bubbleTop = clampBetween(speechTargetY - bubbleHeight + 3, 8, windowRect.height - bubbleHeight - 8);
+  petWindow.style.setProperty("--bubble-width", `${bubbleWidth}px`);
+  petWindow.style.setProperty("--bubble-left", `${bubbleLeft}px`);
+  petWindow.style.setProperty("--bubble-top", `${bubbleTop}px`);
+
+  const visualCenter = (visibleLeft + visibleRight) / 2;
+  const gap = 10;
+  const belowSpace = windowRect.height - visibleBottom - gap - 8;
+  const aboveSpace = visibleTop - gap - 8;
+  const minimumSpace = activePanel === "dialogue" ? 58 : 176;
+  const placeBelow = belowSpace >= minimumSpace || belowSpace >= aboveSpace;
+  const activeElement = activePanel === "dialogue" ? dialogueForm
+    : activePanel === "status" ? statusPanel
+      : activePanel === "wallet" ? walletPanel
+        : activePanel === "story" ? storyPanel : null;
+  const halfPanelWidth = (activeElement?.offsetWidth || Math.min(windowRect.width * 0.72, 404)) / 2;
+  const panelCenter = clampBetween(visualCenter, halfPanelWidth + 8, windowRect.width - halfPanelWidth - 8);
+  const panelSpace = Math.max(96, placeBelow ? belowSpace : aboveSpace);
+
+  petWindow.style.setProperty("--panel-center", `${panelCenter}px`);
+  petWindow.style.setProperty("--panel-space", `${panelSpace}px`);
+  petWindow.style.setProperty("--panel-top", placeBelow ? `${visibleBottom + gap}px` : "auto");
+  petWindow.style.setProperty("--panel-bottom", placeBelow ? "auto" : `${windowRect.height - visibleTop + gap}px`);
+  petWindow.style.setProperty("--panel-origin", placeBelow ? "50% 0%" : "50% 100%");
+  if (activePanel && panelLayouts[activePanel] && !panelGesture) applyPanelLayout(activePanel);
+}
+
+function clearPanelLayout(element: HTMLElement) {
+  element.classList.remove("is-user-positioned", "is-moving", "is-resizing");
+  element.style.removeProperty("left");
+  element.style.removeProperty("top");
+  element.style.removeProperty("right");
+  element.style.removeProperty("bottom");
+  element.style.removeProperty("translate");
+  element.style.removeProperty("width");
+  element.style.removeProperty("height");
+  element.style.removeProperty("--panel-space");
+}
+
+function clampPanelLayout(key: PanelKey, layout: PanelLayout): PanelLayout {
+  const windowRect = petWindow.getBoundingClientRect();
+  const maxWidth = Math.max(180, windowRect.width - 16);
+  const maxHeight = Math.max(80, windowRect.height - 16);
+  const minWidth = Math.min(panelMinimums[key].width, maxWidth);
+  const minHeight = Math.min(panelMinimums[key].height, maxHeight);
+  const width = clampBetween(layout.width, minWidth, maxWidth);
+  const height = clampBetween(layout.height, minHeight, maxHeight);
+  return {
+    left: clampBetween(layout.left, 8, Math.max(8, windowRect.width - width - 8)),
+    top: clampBetween(layout.top, 8, Math.max(8, windowRect.height - height - 8)),
+    width,
+    height,
+  };
+}
+
+function applyPanelLayout(key: PanelKey, draft = panelLayouts[key]) {
+  if (!draft) return;
+  const panel = panelElements[key];
+  const layout = clampPanelLayout(key, draft);
+  panel.classList.add("is-user-positioned");
+  panel.style.left = `${layout.left}px`;
+  panel.style.top = `${layout.top}px`;
+  panel.style.right = "auto";
+  panel.style.bottom = "auto";
+  panel.style.translate = "none";
+  panel.style.width = `${layout.width}px`;
+  panel.style.height = `${layout.height}px`;
+  panel.style.setProperty("--panel-space", `${layout.height}px`);
+}
+
+function savePanelLayout(key: PanelKey, layout: PanelLayout) {
+  panelLayouts[key] = clampPanelLayout(key, layout);
+  try { localStorage.setItem(PANEL_LAYOUT_KEY, JSON.stringify(panelLayouts)); } catch { /* Layout persistence is optional. */ }
+}
+
+function resizeCursor(edges: { top: boolean; right: boolean; bottom: boolean; left: boolean }) {
+  if ((edges.top && edges.left) || (edges.bottom && edges.right)) return "nwse-resize";
+  if ((edges.top && edges.right) || (edges.bottom && edges.left)) return "nesw-resize";
+  if (edges.left || edges.right) return "ew-resize";
+  if (edges.top || edges.bottom) return "ns-resize";
+  return "";
+}
+
+function panelEdges(panel: HTMLElement, event: PointerEvent) {
+  const rect = panel.getBoundingClientRect();
+  const reach = 8;
+  return {
+    top: Math.abs(event.clientY - rect.top) <= reach,
+    right: Math.abs(event.clientX - rect.right) <= reach,
+    bottom: Math.abs(event.clientY - rect.bottom) <= reach,
+    left: Math.abs(event.clientX - rect.left) <= reach,
+  };
+}
+
+function resetPanelLayouts() {
+  panelLayouts = {};
+  try { localStorage.removeItem(PANEL_LAYOUT_KEY); } catch { /* Layout persistence is optional. */ }
+  Object.values(panelElements).forEach(clearPanelLayout);
+  positionAttachedUi();
+  showBubble("弹框的位置和大小已经还原啦。", 5500);
+}
+
+function applyAttachedUiLayout(target: OCProfile) {
+  attachedUiScale = target.imageScale;
+  const readableScale = clampBetween(0.84 + target.imageScale * 0.16, 0.9, 1.06);
+  const chatWidth = clampBetween(petWindow.clientWidth * (0.54 + target.imageScale * 0.08), 260, 410);
+  petWindow.style.setProperty("--bubble-font", `${clampBetween(14 * readableScale, 13, 16)}px`);
+  petWindow.style.setProperty("--chat-width", `${chatWidth}px`);
+  petWindow.style.setProperty("--chat-font", `${clampBetween(15 * readableScale, 14, 17)}px`);
+  requestAnimationFrame(positionAttachedUi);
+  window.clearTimeout(attachedUiTimer);
+  attachedUiTimer = window.setTimeout(positionAttachedUi, 300);
+}
+
 function applyCharacterAppearance() {
   character.src = customImageDataUrl || petImageUrl;
   character.alt = `${profile.name}的桌宠形象`;
@@ -315,6 +560,7 @@ function applyCharacterAppearance() {
   petLayer.style.setProperty("--oc-scale", String(profile.imageScale));
   petLayer.style.setProperty("--oc-x", `${profile.imageX}%`);
   petLayer.style.setProperty("--oc-y", `${profile.imageY}%`);
+  applyAttachedUiLayout(profile);
   petWindow.setAttribute("aria-label", `${profile.name}桌宠`);
   document.title = profile.name;
 }
@@ -325,37 +571,100 @@ function renderState() {
     app.querySelector<HTMLOutputElement>(`[data-value="${key}"]`)!.value = String(state[key]);
   });
   app.querySelector<HTMLElement>("[data-affection]")!.textContent = String(state.affection);
-  app.querySelector<HTMLElement>("[data-points]")!.textContent = String(state.points);
-  app.querySelector<HTMLElement>("[data-wallet-points]")!.textContent = String(state.points);
-  app.querySelector<HTMLElement>("[data-daily-points]")!.textContent = String(state.dailyPoints);
   app.querySelector<HTMLElement>("[data-level-heading]")!.textContent = affectionLabel(state.affection);
-  (Object.keys(state.inventory) as FoodKey[]).forEach((key) => {
-    app.querySelector<HTMLElement>(`[data-food-count="${key}"]`)!.textContent = String(state.inventory[key]);
-    app.querySelector<HTMLButtonElement>(`[data-food="${key}"][data-operation="feed"]`)!.disabled = state.inventory[key] <= 0;
-  });
   savePetState(state);
+}
+
+function signedValue(value: number) { return `${value >= 0 ? "+" : ""}${value}`; }
+
+function inventoryEffectSummary(key: ItemKey) {
+  const item = profile.inventoryCatalog[key];
+  const effects = [
+    item.satiety ? `饱腹 ${signedValue(item.satiety)}` : "",
+    item.mood ? `心情 ${signedValue(item.mood)}` : "",
+    item.energy ? `精力 ${signedValue(item.energy)}` : "",
+    item.affection ? `亲密 ${signedValue(item.affection)}` : "",
+  ].filter(Boolean);
+  return effects.length ? effects.join(" · ") : "无属性变化";
+}
+
+function renderInventoryCatalog() {
+  INVENTORY_ITEM_KEYS.forEach((key) => {
+    const item = profile.inventoryCatalog[key];
+    const card = walletPanel.querySelector<HTMLElement>(`[data-item-card="${key}"]`)!;
+    card.classList.toggle("is-prop", item.kind === "prop");
+    card.querySelector<HTMLElement>(`[data-item-name="${key}"]`)!.textContent = item.name;
+    card.querySelector<HTMLElement>(`[data-item-effects="${key}"]`)!.textContent = inventoryEffectSummary(key);
+    card.querySelector<HTMLButtonElement>(`[data-item-use="${key}"]`)!.textContent = "赠送";
+  });
+}
+
+function fillInventoryEditor() {
+  INVENTORY_ITEM_KEYS.forEach((key) => {
+    const row = inventoryEditor.querySelector<HTMLElement>(`[data-item-editor="${key}"]`)!;
+    const item = profile.inventoryCatalog[key];
+    row.querySelector<HTMLElement>(`[data-item-editor-name="${key}"]`)!.textContent = item.name;
+    (["name", "satiety", "mood", "energy", "affection"] as const).forEach((field) => {
+      (row.querySelector(`[data-item-field="${field}"]`) as HTMLInputElement).value = String(item[field]);
+    });
+    (row.querySelector('[data-item-field="lines"]') as HTMLTextAreaElement).value = item.lines.join("\n");
+  });
+}
+
+function readInventoryEditor(): InventoryCatalog {
+  return Object.fromEntries(INVENTORY_ITEM_KEYS.map((key) => {
+    const row = inventoryEditor.querySelector<HTMLElement>(`[data-item-editor="${key}"]`)!;
+    const readNumber = (field: string, min: number, max: number) => {
+      const value = Number((row.querySelector(`[data-item-field="${field}"]`) as HTMLInputElement).value);
+      return Math.round(clampBetween(Number.isFinite(value) ? value : 0, min, max));
+    };
+    const name = (row.querySelector(`[data-item-field="name"]`) as HTMLInputElement).value.trim();
+    return [key, {
+      kind: profile.inventoryCatalog[key].kind,
+      name: name || profile.inventoryCatalog[key].name,
+      satiety: readNumber("satiety", -100, 100),
+      mood: readNumber("mood", -100, 100),
+      energy: readNumber("energy", -100, 100),
+      affection: readNumber("affection", -100, 100),
+      lines: (row.querySelector('[data-item-field="lines"]') as HTMLTextAreaElement).value.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 12),
+    }];
+  })) as InventoryCatalog;
+}
+
+function hideBubble(immediate = false) {
+  window.clearTimeout(bubbleTimer);
+  bubble.classList.remove("is-visible");
+  if (immediate) bubble.hidden = true;
+  else window.setTimeout(() => { if (!bubble.classList.contains("is-visible")) bubble.hidden = true; }, 220);
 }
 
 function showBubble(text: string, duration = 8500) {
   window.clearTimeout(bubbleTimer);
   bubbleText.textContent = text;
+  bubble.hidden = false;
+  requestAnimationFrame(() => { positionAttachedUi(); bubble.classList.add("is-visible"); });
   replayClass(bubbleText, "is-changing", 420);
-  bubbleTimer = window.setTimeout(() => {
-    bubbleText.textContent = randomFrom(profile.catchphrases.length ? profile.catchphrases : defaultOCProfile().catchphrases);
-  }, duration);
+  bubbleTimer = window.setTimeout(() => hideBubble(), duration);
 }
 
 function closeWheel() { wheel.hidden = true; wheel.classList.remove("is-open"); }
 function hidePanels() {
   activePanel = null; statusPanel.hidden = true; dialogueForm.hidden = true; walletPanel.hidden = true; storyPanel.hidden = true;
+  inventoryEditor.hidden = true;
+  walletPanel.classList.remove("is-editing");
+  inventoryEditButton.setAttribute("aria-expanded", "false");
+  inventoryEditButton.querySelector("span")!.textContent = "编辑";
 }
 
 function openPanel(panel: Exclude<PanelName, null>) {
   hidePanels(); activePanel = panel;
+  clearPanelLayout(panelElements[panel]);
   if (panel === "dialogue") { dialogueForm.hidden = false; window.setTimeout(() => messageInput.focus(), 80); }
   if (panel === "status") statusPanel.hidden = false;
-  if (panel === "wallet") walletPanel.hidden = false;
+  if (panel === "wallet") { fillInventoryEditor(); walletPanel.hidden = false; }
   if (panel === "story") { fillStoryForm(); storyPanel.hidden = false; }
+  positionAttachedUi();
+  if (panelLayouts[panel]) applyPanelLayout(panel);
 }
 
 function openWheel(clientX: number, clientY: number) {
@@ -371,35 +680,64 @@ function openWheel(clientX: number, clientY: number) {
   wheel.hidden = false; requestAnimationFrame(() => wheel.classList.add("is-open"));
 }
 
+function linesFor(key: string): string[] {
+  const custom = profile.dialogueScripts[key]?.filter(Boolean);
+  if (custom?.length) return custom;
+  return library.scenarios.find((scenario) => scenario.key === key)?.lines ?? ["我在这里。"];
+}
+
 function timeGreeting() {
   const hour = new Date().getHours();
-  if (hour < 6) return randomFrom(library.time.lateNight);
-  if (hour < 11) return randomFrom(library.time.morning);
-  if (hour < 17) return randomFrom(library.time.afternoon);
-  if (hour < 23) return randomFrom(library.time.evening);
-  return randomFrom(library.time.lateNight);
+  if (hour < 6) return randomFrom(linesFor("lateNight"));
+  if (hour < 11) return randomFrom(linesFor("morning"));
+  if (hour < 14) return randomFrom(linesFor("noon"));
+  if (hour < 17) return randomFrom(linesFor("afternoon"));
+  if (hour < 23) return randomFrom(linesFor("evening"));
+  return randomFrom(linesFor("lateNight"));
 }
 
 function ambientLine() {
-  if (state.satiety < 25) return randomFrom(library.state.hungry);
-  if (state.energy < 25) return randomFrom(library.state.tired);
-  if (state.mood > 82) return randomFrom(library.state.happy);
+  if (state.satiety < 25) return randomFrom(linesFor("hungry"));
+  if (state.energy < 25) return randomFrom(linesFor("tired"));
+  if (state.mood > 82) return randomFrom(linesFor("happy"));
+  if (Date.now() - lastInteractionAt > 2 * 60 * 60_000) return randomFrom(linesFor("ignored"));
   if (profile.catchphrases.length && Math.random() < 0.42) return randomFrom(profile.catchphrases);
-  return Math.random() < 0.45 ? timeGreeting() : randomFrom(library.general);
+  return Math.random() < 0.45 ? timeGreeting() : randomFrom(linesFor("idle"));
 }
 
-function replyFor(message: string) {
-  const normalized = message.trim().toLowerCase();
-  const customMatch = Object.entries(profile.keywordReplies).find(([keywords]) => keywords.split(/[,，/]/).some((keyword) => normalized.includes(keyword.trim().toLowerCase())));
-  if (customMatch?.[1]?.length) return randomFrom(customMatch[1]);
-  const match = library.keywords.find((entry) => entry.keywords.some((keyword) => normalized.includes(keyword.toLowerCase())));
-  return match ? randomFrom(match.replies) : randomFrom(library.fallback);
-}
+function replyFor() { return randomFrom(linesFor("fallback")); }
 
 function doPoke() {
-  const result = awardInteractionPoint(state); state = result.state; state.mood = clamp(state.mood + 1); state.affection += 1;
-  playPetReaction("poke"); pointPop.textContent = result.awarded ? "+1" : "今日已满"; replayClass(pointPop, "is-showing", 1000);
-  showBubble(result.awarded ? randomFrom(library.poke) : randomFrom(library.pointCap)); renderState();
+  state.mood = clamp(state.mood + 1); state.affection += 1;
+  playPetReaction("poke"); showBubble(randomFrom(linesFor("poke"))); renderState();
+}
+
+function doTease() {
+  const now = Date.now();
+  teaseStreak = now - lastTeaseAt < 2 * 60_000 ? teaseStreak + 1 : 1;
+  lastTeaseAt = now;
+  const annoyed = teaseStreak >= 3;
+  state.mood = clamp(state.mood + (annoyed ? -1 : 1));
+  state.affection += annoyed ? 0 : 1;
+  playPetReaction(annoyed ? "poke" : "happy");
+  showBubble(randomFrom(linesFor(annoyed ? "teaseAngry" : "teaseShy")), 9000);
+  renderState();
+}
+
+function noteInteraction() {
+  lastInteractionAt = Date.now();
+  scheduleSedentary();
+}
+
+function scheduleSedentary() {
+  window.clearTimeout(sedentaryTimer);
+  if (!profile.sedentaryEnabled) return;
+  const delay = clampBetween(profile.sedentaryMinutes, 20, 240) * 60_000;
+  sedentaryTimer = window.setTimeout(() => {
+    if (!state.quiet) showBubble(randomFrom(linesFor("sedentary")), 12_000);
+    lastInteractionAt = Date.now();
+    scheduleSedentary();
+  }, delay);
 }
 
 function scheduleAmbient() {
@@ -423,24 +761,42 @@ async function refreshWeather(announce = false) {
   window.clearTimeout(weatherTimer);
   if (!profile.weatherEnabled || !profile.weatherCity.trim()) {
     currentWeather = null;
+    weatherStatus.textContent = "还没有天气数据。";
+    weatherStatus.dataset.state = "idle";
     weatherTimer = window.setTimeout(() => void refreshWeather(), 30 * 60_000);
     return;
   }
   try {
+    weatherStatus.textContent = "正在查询天气…";
+    weatherStatus.dataset.state = "loading";
     currentWeather = await fetchWeather(profile.weatherCity);
+    weatherStatus.textContent = `${currentWeather.city} · ${currentWeather.description} · ${Math.round(currentWeather.temperature)}℃`;
+    weatherStatus.dataset.state = "success";
     if (announce) {
       if (profile.aiEnabled && !llmInFlight) {
         llmInFlight = true;
         try { showBubble(await requestModelLine("weather"), 10_000); }
-        catch { showBubble(`${currentWeather.city}现在${currentWeather.description}，约 ${Math.round(currentWeather.temperature)}℃。`); }
+        catch { showBubble(weatherLineFor(currentWeather)); }
         finally { llmInFlight = false; }
-      } else showBubble(`${currentWeather.city}现在${currentWeather.description}，约 ${Math.round(currentWeather.temperature)}℃。`);
+      } else showBubble(weatherLineFor(currentWeather));
     }
   } catch (error) {
     currentWeather = null;
+    weatherStatus.textContent = error instanceof Error ? error.message : "天气暂时没有更新成功。";
+    weatherStatus.dataset.state = "error";
     if (announce) showBubble(error instanceof Error ? error.message : "天气暂时没有更新成功。");
   }
   weatherTimer = window.setTimeout(() => void refreshWeather(), 30 * 60_000);
+}
+
+function weatherLineFor(weather: WeatherContext) {
+  if (weather.temperature > 30) return randomFrom(linesFor("hot"));
+  if (weather.temperature < 5) return randomFrom(linesFor("cold"));
+  if (weather.description.includes("雷")) return randomFrom(linesFor("thunder"));
+  if (weather.description.includes("雪")) return randomFrom(linesFor("snow"));
+  if (weather.description.includes("雨")) return randomFrom(linesFor("rain"));
+  if (weather.description.includes("雾")) return randomFrom(linesFor("fog"));
+  return `${weather.city}现在${weather.description}，约 ${Math.round(weather.temperature)}℃。`;
 }
 
 function scheduleLivingMotion() {
@@ -448,24 +804,16 @@ function scheduleLivingMotion() {
   livingTimer = window.setTimeout(() => { if (!dragStart) { petMotion.classList.add("is-living"); window.setTimeout(() => petMotion.classList.remove("is-living"), 2600); } scheduleLivingMotion(); }, delay);
 }
 
-function parseKeywordReplies(value: string): Record<string, string[]> {
-  return Object.fromEntries(value.split("\n").map((line) => {
-    const [key, replies = ""] = line.split(/\s*[=＝]\s*/, 2);
-    return [key?.trim(), replies.split("|").map((reply) => reply.trim()).filter(Boolean)] as const;
-  }).filter(([key, replies]) => Boolean(key) && replies.length));
-}
-
-function keywordRepliesText(entries: Record<string, string[]>) { return Object.entries(entries).map(([key, replies]) => `${key} = ${replies.join(" | ")}`).join("\n"); }
-
 function fillStoryForm() {
   const fields = storyForm.elements;
   (fields.namedItem("name") as HTMLInputElement).value = profile.name;
   (fields.namedItem("addressName") as HTMLInputElement).value = profile.addressName;
-  (fields.namedItem("personality") as HTMLInputElement).value = profile.personality.join("、");
-  (fields.namedItem("tone") as HTMLInputElement).value = profile.tone;
+  (fields.namedItem("selfReference") as HTMLInputElement).value = profile.selfReference;
+  (fields.namedItem("persona") as HTMLTextAreaElement).value = profile.persona;
   (fields.namedItem("catchphrases") as HTMLTextAreaElement).value = profile.catchphrases.join("\n");
-  (fields.namedItem("keywordReplies") as HTMLTextAreaElement).value = keywordRepliesText(profile.keywordReplies);
   (fields.namedItem("proactiveMinutes") as HTMLInputElement).value = String(profile.proactiveMinutes);
+  (fields.namedItem("sedentaryEnabled") as HTMLInputElement).checked = profile.sedentaryEnabled;
+  (fields.namedItem("sedentaryMinutes") as HTMLInputElement).value = String(profile.sedentaryMinutes);
   (fields.namedItem("imageScale") as HTMLInputElement).value = String(Math.round(profile.imageScale * 100));
   (fields.namedItem("imageX") as HTMLInputElement).value = String(profile.imageX);
   (fields.namedItem("imageY") as HTMLInputElement).value = String(profile.imageY);
@@ -476,6 +824,10 @@ function fillStoryForm() {
   (fields.namedItem("aiIdleRatio") as HTMLInputElement).value = String(Math.round(profile.aiIdleRatio * 100));
   (fields.namedItem("weatherEnabled") as HTMLInputElement).checked = profile.weatherEnabled;
   (fields.namedItem("weatherCity") as HTMLInputElement).value = profile.weatherCity;
+  storyForm.querySelectorAll<HTMLTextAreaElement>("[data-script-key]").forEach((textarea) => {
+    const key = textarea.dataset.scriptKey!;
+    textarea.value = (profile.dialogueScripts[key]?.length ? profile.dialogueScripts[key] : library.scenarios.find((scenario) => scenario.key === key)?.lines ?? []).join("\n");
+  });
   connectionBadge.textContent = profile.aiEnabled ? "待连接" : "未启用";
   connectionBadge.dataset.state = "idle";
   updateRangeOutputs();
@@ -483,15 +835,21 @@ function fillStoryForm() {
 
 function readStoryForm(): OCProfile {
   const data = new FormData(storyForm);
+  const dialogueScripts = Object.fromEntries(Array.from(storyForm.querySelectorAll<HTMLTextAreaElement>("[data-script-key]")).map((textarea) => [
+    textarea.dataset.scriptKey!,
+    textarea.value.split("\n").map((line) => line.trim()).filter(Boolean),
+  ]));
   return {
     ...profile,
     name: String(data.get("name") || profile.name).trim(), addressName: String(data.get("addressName") || profile.addressName).trim(),
-    personality: String(data.get("personality") || "").split(/[、,，]/).map((item) => item.trim()).filter(Boolean),
-    tone: String(data.get("tone") || "").trim(),
+    selfReference: String(data.get("selfReference") || "我").trim(),
+    persona: String(data.get("persona") || "").trim(),
     catchphrases: String(data.get("catchphrases") || "").split("\n").map((item) => item.trim()).filter(Boolean),
-    keywordReplies: parseKeywordReplies(String(data.get("keywordReplies") || "")),
+    dialogueScripts,
     proactiveMinutes: clampBetween(Number(data.get("proactiveMinutes")) || 30, 10, 120),
-    imageScale: clampBetween((Number(data.get("imageScale")) || 100) / 100, 0.7, 1.35),
+    sedentaryEnabled: data.get("sedentaryEnabled") === "on",
+    sedentaryMinutes: clampBetween(Number(data.get("sedentaryMinutes")) || 60, 20, 240),
+    imageScale: clampBetween((Number(data.get("imageScale")) || 100) / 100, 0.4, 1.35),
     imageX: clampBetween(Number(data.get("imageX")) || 0, -20, 20), imageY: clampBetween(Number(data.get("imageY")) || 0, -20, 20),
     aiEnabled: data.get("aiEnabled") === "on",
     llmProvider: String(data.get("llmProvider") || "openai") as OCProfile["llmProvider"],
@@ -549,49 +907,191 @@ wheel.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-action]");
   if (!button) return;
   replayClass(button, "is-selected", 360);
+  if (button.dataset.action === "tease") {
+    window.setTimeout(() => { closeWheel(); doTease(); }, 120);
+    return;
+  }
   const panel = button.dataset.action as Exclude<PanelName, null>;
   window.setTimeout(() => { closeWheel(); openPanel(panel); }, 120);
 });
 
 app.querySelectorAll<HTMLButtonElement>("[data-close-panel]").forEach((button) => button.addEventListener("click", hidePanels));
 
+Object.entries(panelElements).forEach(([panelKey, panel]) => {
+  const key = panelKey as PanelKey;
+  const interactiveSelector = "button, input, textarea, select, summary, label, a";
+
+  panel.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || panelGesture) return;
+    const target = event.target as HTMLElement;
+    if (target.closest(interactiveSelector)) return;
+    const edges = panelEdges(panel, event);
+    const edgeCursor = resizeCursor(edges);
+    const canMove = Boolean(target.closest("[data-panel-drag-handle]")) || target === panel;
+    if (!edgeCursor && !canMove) return;
+
+    const windowRect = petWindow.getBoundingClientRect();
+    const rect = panel.getBoundingClientRect();
+    const layout = clampPanelLayout(key, {
+      left: rect.left - windowRect.left,
+      top: rect.top - windowRect.top,
+      width: rect.width,
+      height: rect.height,
+    });
+    panelGesture = {
+      key,
+      pointerId: event.pointerId,
+      mode: edgeCursor ? "resize" : "move",
+      edges,
+      startX: event.clientX,
+      startY: event.clientY,
+      layout,
+    };
+    applyPanelLayout(key, layout);
+    panel.classList.add(edgeCursor ? "is-resizing" : "is-moving");
+    panel.style.cursor = edgeCursor || "grabbing";
+    panel.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+
+  panel.addEventListener("pointermove", (event) => {
+    if (!panelGesture || panelGesture.key !== key || panelGesture.pointerId !== event.pointerId) {
+      const target = event.target as HTMLElement;
+      if (target.closest(interactiveSelector)) panel.style.cursor = "";
+      else panel.style.cursor = resizeCursor(panelEdges(panel, event)) || (target.closest("[data-panel-drag-handle]") ? "grab" : "");
+      return;
+    }
+
+    const dx = event.clientX - panelGesture.startX;
+    const dy = event.clientY - panelGesture.startY;
+    const start = panelGesture.layout;
+    let next: PanelLayout;
+    if (panelGesture.mode === "move") {
+      next = { ...start, left: start.left + dx, top: start.top + dy };
+    } else {
+      const { edges } = panelGesture;
+      next = {
+        left: edges.left ? start.left + dx : start.left,
+        top: edges.top ? start.top + dy : start.top,
+        width: start.width + (edges.right ? dx : 0) - (edges.left ? dx : 0),
+        height: start.height + (edges.bottom ? dy : 0) - (edges.top ? dy : 0),
+      };
+      const minimum = panelMinimums[key];
+      if (next.width < minimum.width && edges.left) next.left -= minimum.width - next.width;
+      if (next.height < minimum.height && edges.top) next.top -= minimum.height - next.height;
+    }
+    applyPanelLayout(key, next);
+  });
+
+  const finishPanelGesture = (event: PointerEvent) => {
+    if (!panelGesture || panelGesture.key !== key || panelGesture.pointerId !== event.pointerId) return;
+    const windowRect = petWindow.getBoundingClientRect();
+    const rect = panel.getBoundingClientRect();
+    savePanelLayout(key, {
+      left: rect.left - windowRect.left,
+      top: rect.top - windowRect.top,
+      width: rect.width,
+      height: rect.height,
+    });
+    panel.classList.remove("is-moving", "is-resizing");
+    panel.style.cursor = "";
+    panelGesture = null;
+  };
+  panel.addEventListener("pointerup", finishPanelGesture);
+  panel.addEventListener("pointercancel", finishPanelGesture);
+  panel.addEventListener("pointerleave", () => { if (!panelGesture) panel.style.cursor = ""; });
+});
+
+inventoryEditButton.addEventListener("click", () => {
+  const willOpen = inventoryEditor.hidden;
+  if (willOpen) fillInventoryEditor();
+  inventoryEditor.hidden = !willOpen;
+  walletPanel.classList.toggle("is-editing", willOpen);
+  inventoryEditButton.setAttribute("aria-expanded", String(willOpen));
+  inventoryEditButton.querySelector("span")!.textContent = willOpen ? "收起" : "编辑";
+});
+
+inventoryEditor.addEventListener("input", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.dataset.itemField !== "name") return;
+  const row = target.closest<HTMLElement>("[data-item-editor]");
+  const key = row?.dataset.itemEditor as ItemKey | undefined;
+  if (key) row!.querySelector<HTMLElement>(`[data-item-editor-name="${key}"]`)!.textContent = target.value.trim() || "未命名道具";
+});
+
+inventoryEditor.addEventListener("submit", (event) => {
+  event.preventDefault();
+  profile = { ...profile, inventoryCatalog: readInventoryEditor() };
+  saveOCProfile(profile);
+  renderInventoryCatalog();
+  inventoryEditor.hidden = true;
+  walletPanel.classList.remove("is-editing");
+  inventoryEditButton.setAttribute("aria-expanded", "false");
+  inventoryEditButton.querySelector("span")!.textContent = "编辑";
+  showBubble("荷包的新名字和属性都记住啦。", 6500);
+});
+
 walletPanel.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-food]");
-  if (!button) return;
-  const key = button.dataset.food as FoodKey; const operation = button.dataset.operation; const food = foodDetails[key];
-  if (operation === "buy") {
-    if (state.points < food.price) { showBubble(`还差 ${food.price - state.points} 荷露，再陪我玩一会儿吧。`); replayClass(button, "is-denied", 420); return; }
-    state.points -= food.price; state.inventory[key] += 1; replayClass(button, "is-used", 420); showBubble(`${food.name}已经放进荷包啦。`);
-  } else {
-    if (state.inventory[key] <= 0) return;
-    state.inventory[key] -= 1; state.satiety = clamp(state.satiety + food.satiety); state.mood = clamp(state.mood + food.mood); state.affection += 1;
-    state = awardInteractionPoint(state).state; replayClass(button, "is-used", 420); playPetReaction("happy"); showBubble(`${food.name}很好吃，谢谢你。`);
+  const target = event.target as HTMLElement;
+  const tab = target.closest<HTMLButtonElement>("button[data-inventory-tab]");
+  if (tab) {
+    const kind = tab.dataset.inventoryTab;
+    walletPanel.querySelectorAll<HTMLButtonElement>("[data-inventory-tab]").forEach((button) => button.setAttribute("aria-selected", String(button === tab)));
+    walletPanel.querySelectorAll<HTMLElement>("[data-inventory-section]").forEach((section) => { section.hidden = section.dataset.inventorySection !== kind; });
+    return;
   }
+  const button = target.closest<HTMLButtonElement>("button[data-item-use]");
+  if (!button) return;
+  const key = button.dataset.itemUse as ItemKey;
+  const item = profile.inventoryCatalog[key];
+  state.satiety = clamp(state.satiety + item.satiety);
+  state.mood = clamp(state.mood + item.mood);
+  state.energy = clamp(state.energy + item.energy);
+  state.affection = Math.max(0, state.affection + item.affection);
+  replayClass(button, "is-used", 420); playPetReaction("happy");
+  showBubble(item.lines.length ? randomFrom(item.lines) : item.kind === "snack" ? `${item.name}很好吃，谢谢你。` : `${item.name}已经用上啦。`);
   renderState();
 });
 
 dialogueForm.addEventListener("submit", async (event) => {
   event.preventDefault(); const message = messageInput.value.trim(); if (!message || llmInFlight) return messageInput.focus();
-  messageInput.value = ""; state.mood = clamp(state.mood + 1); state.affection += 1; hidePanels();
+  messageInput.value = ""; state.mood = clamp(state.mood + 1); state.affection += 1; noteInteraction();
   if (profile.aiEnabled) {
     llmInFlight = true; dialogueForm.classList.add("is-loading"); showBubble("让我想一想…", 45_000);
     try { showBubble(await requestModelLine("chat", message), 12_000); }
-    catch { showBubble(replyFor(message), 10_000); }
+    catch { showBubble(replyFor(), 10_000); }
     finally { llmInFlight = false; dialogueForm.classList.remove("is-loading"); }
-  } else showBubble(replyFor(message), 10_000);
-  replayClass(petMotion, "is-talking", 1900); renderState();
+  } else showBubble(replyFor(), 10_000);
+  replayClass(petMotion, "is-talking", 1900); renderState(); messageInput.focus();
 });
 
 storyForm.addEventListener("input", (event) => {
   if (!(event.target instanceof HTMLInputElement) || event.target.type !== "range") return;
   updateRangeOutputs(); const preview = readStoryForm();
   petLayer.style.setProperty("--oc-scale", String(preview.imageScale)); petLayer.style.setProperty("--oc-x", `${preview.imageX}%`); petLayer.style.setProperty("--oc-y", `${preview.imageY}%`);
+  applyAttachedUiLayout(preview);
 });
 
 storyForm.addEventListener("submit", (event) => {
-  event.preventDefault(); profile = readStoryForm(); saveOCProfile(profile); applyCharacterAppearance(); scheduleAmbient(); hidePanels();
+  event.preventDefault(); profile = readStoryForm(); saveOCProfile(profile); applyCharacterAppearance(); scheduleAmbient(); scheduleSedentary(); hidePanels();
   void refreshWeather(profile.weatherEnabled);
   showBubble(`话本收好啦。以后就叫我${profile.name}吧。`, 7000);
+});
+
+weatherButton.addEventListener("click", async () => {
+  if (weatherButton.disabled) return;
+  const draft = readStoryForm();
+  if (!draft.weatherCity) {
+    weatherStatus.textContent = "请先填写城市。";
+    weatherStatus.dataset.state = "error";
+    return;
+  }
+  (storyForm.elements.namedItem("weatherEnabled") as HTMLInputElement).checked = true;
+  profile = { ...profile, weatherEnabled: true, weatherCity: draft.weatherCity };
+  saveOCProfile(profile);
+  weatherButton.disabled = true;
+  await refreshWeather(true);
+  weatherButton.disabled = false;
 });
 
 const providerSelect = storyForm.elements.namedItem("llmProvider") as HTMLSelectElement;
@@ -612,7 +1112,7 @@ app.querySelector("[data-test-api]")?.addEventListener("click", async () => {
     setConnectionState("success", `连接成功：${line}`);
     showBubble(line, 8500);
   } catch (error) {
-    setConnectionState("error", error instanceof Error ? error.message : "连接失败，请检查设置。");
+    setConnectionState("error", describeLLMError(error));
   } finally { llmInFlight = false; }
 });
 
@@ -656,6 +1156,7 @@ app.querySelector("[data-reset-image]")?.addEventListener("click", async () => {
   profile = { ...profile, imageScale: 1, imageX: 0, imageY: 0 }; saveOCProfile(profile);
   fillStoryForm(); applyCharacterAppearance(); showBubble("换回最初的样子啦。", 5500);
 });
+app.querySelector("[data-reset-panels]")?.addEventListener("click", resetPanelLayouts);
 
 app.querySelector("[data-export-oc]")?.addEventListener("click", () => {
   const pack: OCPack = {
@@ -673,19 +1174,28 @@ importInput.addEventListener("change", async () => {
   const file = importInput.files?.[0]; if (!file) return;
   try {
     const pack = JSON.parse(await file.text()) as OCPack; if (pack.version !== 1 || !pack.profile?.name) throw new Error("invalid pack");
-    profile = { ...defaultOCProfile(), ...pack.profile };
+    const profileDefaults = defaultOCProfile();
+    profile = { ...profileDefaults, ...pack.profile, inventoryCatalog: normalizeInventoryCatalog(pack.profile.inventoryCatalog, profileDefaults.inventoryCatalog) };
     customImageDataUrl = pack.imageDataUrl || null;
     animationPack = pack.animationPack?.version === 1 ? pack.animationPack : null;
     saveOCProfile(profile);
     await Promise.all([saveOCImage(customImageDataUrl), saveAnimationPack(animationPack)]);
-    fillStoryForm(); applyCharacterAppearance(); showBubble("话本和形象都导入好啦。", 6500);
+    fillStoryForm(); applyCharacterAppearance(); renderInventoryCatalog(); showBubble("话本、形象和荷包设定都导入好啦。", 6500);
   } catch { showBubble("这个话本文件读不懂，请换一个有效的 JSON 配置包。"); }
 });
 
-pet.addEventListener("contextmenu", (event) => { event.preventDefault(); petMotion.classList.remove("is-pressed"); dragStart = null; openWheel(event.clientX, event.clientY); });
+pet.addEventListener("contextmenu", (event) => { event.preventDefault(); noteInteraction(); hideBubble(true); petMotion.classList.remove("is-pressed"); dragStart = null; openWheel(event.clientX, event.clientY); });
 pet.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
-  pet.setPointerCapture(event.pointerId); dragStart = { x: event.clientX, y: event.clientY, left: state.position.x, top: state.position.y };
+  noteInteraction();
+  pet.setPointerCapture(event.pointerId);
+  dragStart = {
+    x: event.clientX,
+    y: event.clientY,
+    left: state.position.x,
+    top: state.position.y,
+    dialogueLayout: activePanel === "dialogue" && panelLayouts.dialogue ? { ...panelLayouts.dialogue } : undefined,
+  };
   dragged = false; nativeDragStarted = false; petMotion.classList.add("is-pressed");
 });
 pet.addEventListener("pointermove", (event) => {
@@ -700,22 +1210,43 @@ pet.addEventListener("pointermove", (event) => {
   }
   state.position.x = clampBetween(dragStart.left + dx, -90, 90); state.position.y = clampBetween(dragStart.top + dy, -80, 70);
   petLayer.style.setProperty("--drag-x", `${state.position.x}px`); petLayer.style.setProperty("--drag-y", `${state.position.y}px`);
+  petWindow.style.setProperty("--ui-drag-x", `${state.position.x}px`); petWindow.style.setProperty("--ui-drag-y", `${state.position.y}px`);
+  if (dragStart.dialogueLayout) {
+    const dialogueLayout = dragStart.dialogueLayout;
+    panelLayouts.dialogue = clampPanelLayout("dialogue", {
+      ...dialogueLayout,
+      left: dialogueLayout.left + state.position.x - dragStart.left,
+      top: dialogueLayout.top + state.position.y - dragStart.top,
+    });
+    applyPanelLayout("dialogue");
+  }
+  requestAnimationFrame(positionAttachedUi);
 });
 pet.addEventListener("pointerup", (event) => {
   if (event.button !== 0 || !dragStart) return;
+  const dialogueMovedWithPet = Boolean(dragStart.dialogueLayout && panelLayouts.dialogue);
   petMotion.classList.remove("is-pressed", "is-dragging"); dragStart = null;
-  if (dragged) savePetState(state); else { closeWheel(); doPoke(); }
+  if (dragged) {
+    savePetState(state);
+    if (dialogueMovedWithPet && panelLayouts.dialogue) savePanelLayout("dialogue", panelLayouts.dialogue);
+    window.setTimeout(positionAttachedUi, 150);
+  }
+  else { closeWheel(); hidePanels(); hideBubble(true); doPoke(); }
 });
 pet.addEventListener("pointercancel", () => { petMotion.classList.remove("is-pressed", "is-dragging"); dragStart = null; dragged = false; });
 
 document.addEventListener("pointerdown", (event) => {
+  noteInteraction();
   if (!wheel.hidden && !(event.target as HTMLElement).closest("[data-wheel]") && !(event.target as HTMLElement).closest("[data-pet]")) closeWheel();
 });
 document.addEventListener("keydown", (event) => {
+  noteInteraction();
   if (event.key === "Escape") { if (!wheel.hidden) closeWheel(); else hidePanels(); }
 });
+window.addEventListener("resize", positionAttachedUi);
 
 window.setInterval(() => { state = applyElapsedDecay(state); renderState(); }, 60_000);
 petLayer.style.setProperty("--drag-x", `${state.position.x}px`); petLayer.style.setProperty("--drag-y", `${state.position.y}px`);
-applyCharacterAppearance(); renderState(); showBubble(profile.catchphrases[1] || profile.catchphrases[0] || "要一起喝杯茶吗？", 9000); scheduleAmbient(); scheduleLivingMotion(); void refreshWeather();
+petWindow.style.setProperty("--ui-drag-x", `${state.position.x}px`); petWindow.style.setProperty("--ui-drag-y", `${state.position.y}px`);
+applyCharacterAppearance(); renderInventoryCatalog(); renderState(); hideBubble(true); scheduleAmbient(); scheduleSedentary(); scheduleLivingMotion(); void refreshWeather();
 window.setTimeout(() => void checkForUpdates(false), 8000);

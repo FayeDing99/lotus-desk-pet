@@ -2,6 +2,7 @@
 node_modules/
 dist/
 src-tauri/target/
+src-tauri/gen/
 
 # Local secrets and environment overrides
 .env
@@ -26,4 +27,3 @@ public/qa/
 .idea/
 .vscode/
 *.swp
-

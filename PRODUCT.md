@@ -24,17 +24,17 @@ The companion is organized around calm ambient presence and a lotus-tea characte
 
 ## Operating Context
 
-The pet lives in a small transparent always-on-top desktop window. The user drags it around, clicks to reveal controls, pokes it, chats through a short local keyword reply system, and occasionally checks its needs and relationship state.
+The pet lives in a small transparent always-on-top desktop window. The user drags it around, left-clicks to poke, right-clicks to reveal a compact action wheel, chats through an optional model-backed input, and occasionally checks its needs and relationship state.
 
 ## Capabilities and Constraints
 
-- First phase: transparent frameless always-on-top shell, draggable pet, idle movement, click toolbar, poke reaction, local dialogue, state panel, a small persistent food bag, basic feeding, and timed behaviors.
-- State vocabulary: mood, satiety (shown to users as hunger), energy, affection, and points.
-- Poke awards one point, subject to a daily 50-point cap.
-- Feeding ships with a small local starter inventory; each food changes satiety and mood, adds affection, and awards at most one daily-capped interaction point.
-- No AI, weather API, complex shop or restocking flow, skeletal animation, or remote service in this phase.
+- Current phase: transparent frameless always-on-top shell, draggable and scalable pet, idle movement, right-click action wheel, poke and tease reactions, local scene-based dialogue, optional model-backed chat, weather-aware lines, state panel, a small persistent food bag, basic feeding, sedentary reminders, and timed behaviors.
+- State vocabulary: mood, satiety (shown to users as hunger), energy, and affection.
+- Poke raises mood and affection without using a score or currency system.
+- The wallet contains separate snack and prop shelves; each item can customize its name, state effects, and possible use lines, and can be used repeatedly without an inventory limit.
+- AI and weather are optional and must fail safely back to the local script. There is still no complex shop or restocking flow, skeletal animation, or required remote service.
 - The supplied PNG is the intended temporary character asset; it may be a single flattened image.
-- Native compilation is currently constrained by the absence of a local Rust toolchain. The web prototype remains the minimum runnable implementation.
+- The browser prototype remains independently runnable as the minimum fallback when native tooling is unavailable.
 
 ## Brand Commitments
 
