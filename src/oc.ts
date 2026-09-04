@@ -62,7 +62,7 @@ export interface OCPack {
 
 export const defaultOCProfile = (): OCProfile => ({
   id: "lotus-host",
-  name: "荷间小主人",
+  name: "DeskPet",
   addressName: "你",
   selfReference: "我",
   persona: "温柔安静，偶尔有一点俏皮。喜欢荷花、清茶和安静的陪伴；关心人但不会频繁催促，说话自然、轻柔而简短。",

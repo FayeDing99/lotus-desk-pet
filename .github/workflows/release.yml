@@ -13,7 +13,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-22.04, windows-latest]
+        include:
+          - platform: macos-latest
+            build_args: ""
+          - platform: ubuntu-22.04
+            build_args: ""
+          - platform: windows-latest
+            build_args: "--bundles nsis"
     runs-on: ${{ matrix.platform }}
 
     steps:
@@ -42,8 +48,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
+          args: ${{ matrix.build_args }}
           tagName: ${{ github.ref_name }}
-          releaseName: 荷间小主人 ${{ github.ref_name }}
+          releaseName: DeskPet ${{ github.ref_name }}
           releaseBody: |
             桌宠桌面版自动构建。请选择与你的系统匹配的安装包。
 

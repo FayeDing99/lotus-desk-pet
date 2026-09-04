@@ -1,3 +1,3 @@
 fn main() {
-  lotus_desk_pet_lib::run();
+  deskpet_lib::run();
 }

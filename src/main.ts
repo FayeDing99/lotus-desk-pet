@@ -100,7 +100,7 @@ const inventoryEditorMarkup = `
   <section class="inventory-editor-group"><h3>${icon("backpack")}道具栏</h3>${PROP_ITEM_KEYS.map((key, index) => inventoryEditorRow(key, `道具 ${index + 1}`)).join("")}</section>`;
 
 app.innerHTML = `
-  <main class="pet-window" aria-label="荷间小主人桌宠" data-pet-window>
+  <main class="pet-window" aria-label="DeskPet 桌宠" data-pet-window>
     <section class="speech-sheet" data-bubble aria-live="polite" hidden>
       <img class="speech-plate" src="${speechBubbleUrl}" alt="" aria-hidden="true" />
       <p class="speech-text" data-bubble-text>要一起喝杯茶吗？</p>
@@ -110,7 +110,7 @@ app.innerHTML = `
       <button class="pet-hit-area" type="button" data-pet aria-label="桌宠；左键戳一戳，右键打开功能轮盘，拖动可移动">
         <span class="pet-motion" data-pet-motion>
           <span class="character-stage" data-character-stage>
-            <img class="character-plate" data-character src="${petImageUrl}" alt="坐在荷叶下喝茶的荷间小主人" draggable="false" />
+            <img class="character-plate" data-character src="${petImageUrl}" alt="DeskPet 桌宠角色" draggable="false" />
           </span>
         </span>
       </button>

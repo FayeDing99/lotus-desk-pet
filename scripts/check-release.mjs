@@ -8,7 +8,7 @@ const cargoToml = await readFile(new URL("../src-tauri/Cargo.toml", import.meta.
 const cargoLock = await readFile(new URL("../src-tauri/Cargo.lock", import.meta.url), "utf8");
 
 const cargoVersion = cargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1];
-const cargoLockVersion = cargoLock.match(/\[\[package\]\]\s+name\s*=\s*"lotus-desk-pet"\s+version\s*=\s*"([^"]+)"/m)?.[1];
+const cargoLockVersion = cargoLock.match(/\[\[package\]\]\s+name\s*=\s*"deskpet"\s+version\s*=\s*"([^"]+)"/m)?.[1];
 const expected = packageJson.version;
 const versions = {
   "package.json": expected,

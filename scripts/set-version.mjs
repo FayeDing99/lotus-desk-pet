@@ -23,7 +23,7 @@ packageLock.version = nextVersion;
 if (packageLock.packages?.[""]) packageLock.packages[""].version = nextVersion;
 tauriConfig = tauriConfig.replace(/("version"\s*:\s*)"[^"]+"/, `$1"${nextVersion}"`);
 cargoToml = cargoToml.replace(/(^\[package\][\s\S]*?^version\s*=\s*)"[^"]+"/m, `$1"${nextVersion}"`);
-cargoLock = cargoLock.replace(/(\[\[package\]\]\s+name\s*=\s*"lotus-desk-pet"\s+version\s*=\s*)"[^"]+"/m, `$1"${nextVersion}"`);
+cargoLock = cargoLock.replace(/(\[\[package\]\]\s+name\s*=\s*"deskpet"\s+version\s*=\s*)"[^"]+"/m, `$1"${nextVersion}"`);
 
 await Promise.all([
   writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`),

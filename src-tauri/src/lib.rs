@@ -95,5 +95,5 @@ pub fn run() {
     .plugin(tauri_plugin_updater::Builder::new().build())
     .invoke_handler(tauri::generate_handler![llm_chat])
     .run(tauri::generate_context!())
-    .expect("运行荷间小主人时发生错误");
+    .expect("运行 DeskPet 时发生错误");
 }
