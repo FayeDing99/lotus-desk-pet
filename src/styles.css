@@ -419,7 +419,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .image-drop span { display: grid; gap: 1px; }
 .image-drop strong { color: var(--ink); font-family: "Noto Serif SC", serif; font-size: 13px; }
 .image-drop small { font-size: 10px; }
-.animation-import-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; margin-top: 7px; }
+.animation-import-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 6px; margin-top: 7px; }
 .animation-drop {
   min-width: 0;
   min-height: 48px;
@@ -443,6 +443,26 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .animation-drop span { min-width: 0; display: grid; gap: 1px; }
 .animation-drop strong { color: var(--ink); font-family: "Noto Serif SC", serif; font-size: 12px; }
 .animation-drop small { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.psd-import-button {
+  width: 46px;
+  min-height: 48px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 1px;
+  border: 1px solid rgba(111, 141, 114, 0.34);
+  border-radius: 12px;
+  background: rgba(255, 253, 245, 0.72);
+  color: var(--sage-deep);
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, transform 220ms var(--ease-pop);
+}
+.psd-import-button i { font-size: 17px; }
+.psd-import-button span { font-size: 8px; font-weight: 600; letter-spacing: 0.04em; }
+.psd-import-button:hover { border-color: var(--sage); background: var(--mint); }
+.psd-import-button:active { transform: scale(0.94); }
+.psd-import-button:focus-visible, .psd-import-button:focus-within { outline: 2px solid color-mix(in srgb, var(--sage), white 24%); outline-offset: 2px; }
+.psd-import-button.is-loading { cursor: wait; opacity: 0.62; }
 .clear-animation {
   min-height: 28px;
   padding: 4px 7px;

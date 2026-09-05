@@ -7,7 +7,7 @@ import "@fontsource/noto-serif-sc/chinese-simplified-400.css";
 import "@fontsource/noto-serif-sc/chinese-simplified-600.css";
 import "@phosphor-icons/web/regular";
 import type dialogueShape from "../public/dialogue.json";
-import { loadAnimationPack, packSummary, parseAnimationFolder, saveAnimationPack, type OCAnimationPack } from "./animation-pack";
+import { loadAnimationPack, packSummary, parseAnimationFolder, parsePsdFile, saveAnimationPack, type OCAnimationPack } from "./animation-pack";
 import {
   INVENTORY_ITEM_KEYS,
   PROP_ITEM_KEYS,
@@ -53,7 +53,7 @@ const icons = {
   close: icon("x"), send: icon("paper-plane-tilt"), upload: icon("upload-simple"), reset: icon("arrow-counter-clockwise"),
   export: icon("download-simple"), import: icon("file-arrow-up"),
   cloud: icon("cloud-sun"), key: icon("key"), test: icon("plugs-connected"),
-  layers: icon("stack"), folder: icon("folder-open"),
+  layers: icon("stack"), folder: icon("folder-open"), psd: icon("file-image"),
   update: icon("arrows-clockwise"),
   edit: icon("sliders-horizontal"),
   download: icon("download-simple"),
@@ -204,7 +204,8 @@ app.innerHTML = `
         <div class="story-scroll">
           <label class="image-drop" data-image-drop tabindex="0">${icons.upload}<span><strong>更换 OC 图片</strong><small>PNG / WebP，可拖入</small></span><input type="file" accept="image/png,image/webp" data-character-file hidden /></label>
           <div class="animation-import-row">
-            <label class="animation-drop" data-animation-drop tabindex="0">${icons.layers}<span><strong>导入 OC 动画包</strong><small data-animation-status>选择包含分层图片的文件夹</small></span>${icons.folder}<input type="file" accept="image/png,image/webp,application/json" multiple webkitdirectory data-animation-files hidden /></label>
+            <label class="animation-drop" data-animation-drop tabindex="0">${icons.layers}<span><strong>导入 OC 动画包</strong><small data-animation-status>分层图片文件夹，或右侧 PSD</small></span>${icons.folder}<input type="file" accept="image/png,image/webp,application/json" multiple webkitdirectory data-animation-files hidden /></label>
+            <label class="psd-import-button" data-psd-import tabindex="0" aria-label="导入 PSD 分层文件">${icons.psd}<span>PSD</span><input type="file" accept=".psd,image/vnd.adobe.photoshop" data-psd-file hidden /></label>
             <button type="button" class="clear-animation" data-clear-animation hidden>改用单图</button>
           </div>
           <div class="field-pair"><label>OC 名字<input name="name" maxlength="24" /></label><label>如何称呼你<input name="addressName" maxlength="16" /></label></div>
@@ -322,6 +323,8 @@ const connectionBadge = app.querySelector<HTMLElement>("[data-connection-badge]"
 const animationFilesInput = app.querySelector<HTMLInputElement>("[data-animation-files]")!;
 const animationDrop = app.querySelector<HTMLElement>("[data-animation-drop]")!;
 const animationStatus = app.querySelector<HTMLElement>("[data-animation-status]")!;
+const psdFileInput = app.querySelector<HTMLInputElement>("[data-psd-file]")!;
+const psdImportButton = app.querySelector<HTMLElement>("[data-psd-import]")!;
 const clearAnimationButton = app.querySelector<HTMLButtonElement>("[data-clear-animation]")!;
 const updateStatus = app.querySelector<HTMLElement>("[data-update-status]")!;
 const updateButton = app.querySelector<HTMLButtonElement>("[data-check-update]")!;
@@ -338,6 +341,7 @@ const updateRemindButtons = Array.from(app.querySelectorAll<HTMLButtonElement>("
 const updateAutoInput = app.querySelector<HTMLInputElement>("[data-update-auto]")!;
 const weatherStatus = app.querySelector<HTMLElement>("[data-weather-status]")!;
 const weatherButton = app.querySelector<HTMLButtonElement>("[data-query-weather]")!;
+let animationImportBusy = false;
 const panelElements: Record<PanelKey, HTMLElement> = {
   dialogue: dialogueForm,
   status: statusPanel,
@@ -798,7 +802,7 @@ function applyCharacterAppearance() {
     }
     animationStatus.textContent = `${animationPack.name} · ${packSummary(animationPack)}`;
   } else {
-    animationStatus.textContent = "选择包含分层图片的文件夹";
+    animationStatus.textContent = "分层图片文件夹，或右侧 PSD";
   }
   clearAnimationButton.hidden = !animationPack;
   petLayer.style.setProperty("--oc-scale", String(profile.imageScale));
@@ -1128,8 +1132,13 @@ async function useCharacterFile(file: File) {
 }
 
 async function useAnimationFolder(files: FileList | File[]) {
+  if (animationImportBusy) return;
+  animationImportBusy = true;
   const previous = animationPack;
   animationDrop.classList.add("is-loading");
+  psdImportButton.classList.add("is-loading");
+  animationFilesInput.disabled = true;
+  psdFileInput.disabled = true;
   animationStatus.textContent = "正在识别并组装图层…";
   try {
     const parsed = await parseAnimationFolder(files);
@@ -1144,7 +1153,40 @@ async function useAnimationFolder(files: FileList | File[]) {
     showBubble(error instanceof Error ? error.message : "这个动画包没有解析成功。", 7500);
   } finally {
     animationDrop.classList.remove("is-loading", "is-dragging-over");
+    psdImportButton.classList.remove("is-loading");
+    animationFilesInput.disabled = false;
+    psdFileInput.disabled = false;
     animationFilesInput.value = "";
+    animationImportBusy = false;
+  }
+}
+
+async function usePsdFile(file: File) {
+  if (animationImportBusy) return;
+  animationImportBusy = true;
+  const previous = animationPack;
+  animationDrop.classList.add("is-loading");
+  psdImportButton.classList.add("is-loading");
+  animationStatus.textContent = "正在读取 PSD 图层…";
+  psdFileInput.disabled = true;
+  animationFilesInput.disabled = true;
+  try {
+    const parsed = await parsePsdFile(file);
+    await saveAnimationPack(parsed);
+    animationPack = parsed;
+    applyCharacterAppearance();
+    showBubble(`PSD 已自动拆成 ${parsed.layers.length} 个可见图层，基础动作装好啦。`, 8000);
+  } catch (error) {
+    animationPack = previous;
+    applyCharacterAppearance();
+    showBubble(error instanceof Error ? error.message : "这个 PSD 没有解析成功。", 8000);
+  } finally {
+    animationDrop.classList.remove("is-loading", "is-dragging-over");
+    psdImportButton.classList.remove("is-loading");
+    psdFileInput.disabled = false;
+    animationFilesInput.disabled = false;
+    psdFileInput.value = "";
+    animationImportBusy = false;
   }
 }
 
@@ -1403,12 +1445,20 @@ imageDrop.addEventListener("keydown", (event) => { if (event.key === "Enter" || 
 animationFilesInput.addEventListener("change", () => {
   if (animationFilesInput.files?.length) void useAnimationFolder(animationFilesInput.files);
 });
+psdFileInput.addEventListener("change", () => {
+  const file = psdFileInput.files?.[0];
+  if (file) void usePsdFile(file);
+});
+psdImportButton.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") { event.preventDefault(); psdFileInput.click(); }
+});
 animationDrop.addEventListener("dragover", (event) => { event.preventDefault(); animationDrop.classList.add("is-dragging-over"); });
 animationDrop.addEventListener("dragleave", () => animationDrop.classList.remove("is-dragging-over"));
 animationDrop.addEventListener("drop", (event) => {
   event.preventDefault();
   const files = event.dataTransfer?.files;
-  if (files?.length) void useAnimationFolder(files);
+  if (files?.length === 1 && /\.psd$/i.test(files[0]!.name)) void usePsdFile(files[0]!);
+  else if (files?.length) void useAnimationFolder(files);
 });
 animationDrop.addEventListener("keydown", (event) => {
   if (event.key === "Enter" || event.key === " ") { event.preventDefault(); animationFilesInput.click(); }

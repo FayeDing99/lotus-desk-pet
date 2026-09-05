@@ -16,7 +16,7 @@ export interface OCAnimationPack {
   canvas: { width: number; height: number };
   layers: OCLayer[];
   importedAt: number;
-  source: "manifest" | "inferred";
+  source: "manifest" | "inferred" | "psd";
 }
 
 interface ManifestLayer {
@@ -91,6 +91,115 @@ function roleFromName(name: string): OCLayerRole {
   if (/foreground|前景/.test(value)) return "foreground";
   if (/accessory|饰品|飾品|装饰|裝飾/.test(value)) return "accessory";
   return "static";
+}
+
+const PSD_MAX_FILE_BYTES = 160 * 1024 * 1024;
+const PSD_MAX_MEMORY_BYTES = 512 * 1024 * 1024;
+const PSD_MAX_CANVAS_PIXELS = 32_000_000;
+const PSD_MAX_LAYERS = 64;
+
+type PsdLayer = import("ag-psd").Layer;
+type PsdLeaf = { layer: PsdLayer; path: string; opacity: number };
+
+function visiblePsdLeaves(layers: PsdLayer[], parentPath = "", parentVisible = true, parentOpacity = 1): PsdLeaf[] {
+  const leaves: PsdLeaf[] = [];
+  for (const layer of layers) {
+    const name = layer.name?.trim() || "未命名图层";
+    const path = parentPath ? `${parentPath}/${name}` : name;
+    const opacity = parentOpacity * Math.max(0, Math.min(1, (layer.opacity ?? 255) / 255));
+    const visible = parentVisible && layer.hidden !== true && opacity > 0;
+    if (layer.children?.length) leaves.push(...visiblePsdLeaves(layer.children, path, visible, opacity));
+    else if (visible) leaves.push({ layer, path, opacity });
+  }
+  return leaves;
+}
+
+function canvasHasVisiblePixels(canvas: HTMLCanvasElement) {
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return false;
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  for (let index = 3; index < pixels.length; index += 4) if (pixels[index]! > 4) return true;
+  return false;
+}
+
+function canvasToPngDataUrl(canvas: HTMLCanvasElement) {
+  return new Promise<string>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) { reject(new Error("PSD 图层无法转换为 PNG。")); return; }
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error ?? new Error("PSD 图层读取失败。"));
+      reader.readAsDataURL(blob);
+    }, "image/png");
+  });
+}
+
+export async function parsePsdFile(file: File): Promise<OCAnimationPack> {
+  if (!/\.psd$/i.test(file.name) && file.type !== "image/vnd.adobe.photoshop") throw new Error("请选择 .psd 分层文件。");
+  if (!file.size) throw new Error("这个 PSD 是空文件。");
+  if (file.size > PSD_MAX_FILE_BYTES) throw new Error("PSD 超过 160 MB，请先删除无用图层或缩小画布。");
+
+  try {
+    const [{ readPsd, getLayerCanvas }, buffer] = await Promise.all([import("ag-psd"), file.arrayBuffer()]);
+    const psd = readPsd(buffer, {
+      skipCompositeImageData: true,
+      skipThumbnail: true,
+      skipLinkedFilesData: true,
+      totalMemoryLimit: PSD_MAX_MEMORY_BYTES,
+    });
+    const width = Math.round(psd.width);
+    const height = Math.round(psd.height);
+    if (!width || !height) throw new Error("PSD 没有有效的画布尺寸。");
+    if (width * height > PSD_MAX_CANVAS_PIXELS) throw new Error("PSD 画布过大，请将总像素控制在 3200 万以内。");
+
+    // Photoshop stores siblings from top to bottom. Reverse them so increasing
+    // z-index paints the document from its bottom layer to its top layer.
+    const leaves = visiblePsdLeaves(psd.children ?? []).reverse();
+    if (!leaves.length) throw new Error("PSD 中没有找到可见图层。");
+    if (leaves.length > PSD_MAX_LAYERS) throw new Error(`PSD 有 ${leaves.length} 个可见图层，基础版最多支持 ${PSD_MAX_LAYERS} 个。`);
+
+    const layers: OCLayer[] = [];
+    let encodedCharacters = 0;
+    for (const [index, item] of leaves.entries()) {
+      const source = getLayerCanvas(item.layer) ?? item.layer.canvas;
+      if (!source?.width || !source.height || !canvasHasVisiblePixels(source)) continue;
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("当前系统无法创建 PSD 图层画布。");
+      context.globalAlpha = item.opacity;
+      const fullCanvasLayer = source.width === width && source.height === height;
+      context.drawImage(source, fullCanvasLayer ? 0 : (item.layer.left ?? 0), fullCanvasLayer ? 0 : (item.layer.top ?? 0));
+      const dataUrl = await canvasToPngDataUrl(canvas);
+      encodedCharacters += dataUrl.length;
+      if (encodedCharacters > 120 * 1024 * 1024) throw new Error("PSD 解析后的图层过大，请合并无需动画的图层后再导入。");
+      const role = roleFromName(item.path);
+      layers.push({
+        id: `psd-layer-${index + 1}`,
+        name: item.layer.name?.trim() || `图层 ${index + 1}`,
+        role,
+        zIndex: index,
+        anchorX: 50,
+        anchorY: role === "eyes" || role === "mouth" || role === "head" ? 42 : 72,
+        dataUrl,
+      });
+      if ((index + 1) % 4 === 0) await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    if (!layers.length) throw new Error("PSD 的可见图层里没有可读取的像素内容。");
+
+    return {
+      version: 1,
+      name: file.name.replace(/\.psd$/i, ""),
+      canvas: { width, height },
+      layers,
+      importedAt: Date.now(),
+      source: "psd",
+    };
+  } catch (error) {
+    if (error instanceof Error && (/^PSD |PSD /.test(error.message) || error.message.includes("当前系统"))) throw error;
+    throw new Error("PSD 没有解析成功，请确认它是未损坏的 RGB 分层 PSD。");
+  }
 }
 
 const defaultZ: Record<OCLayerRole, number> = {
