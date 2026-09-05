@@ -56,3 +56,7 @@ jobs:
           prerelease: false
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
+
+      - name: Verify macOS app signature
+        if: matrix.platform == 'macos-latest'
+        run: codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/DeskPet.app
