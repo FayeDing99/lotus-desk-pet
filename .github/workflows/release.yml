@@ -16,6 +16,8 @@ jobs:
         include:
           - platform: macos-latest
             build_args: ""
+          - platform: macos-15-intel
+            build_args: ""
           - platform: ubuntu-22.04
             build_args: ""
           - platform: windows-latest
@@ -58,5 +60,5 @@ jobs:
           updaterJsonPreferNsis: true
 
       - name: Verify macOS app signature
-        if: matrix.platform == 'macos-latest'
+        if: startsWith(matrix.platform, 'macos-')
         run: codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/DeskPet.app
