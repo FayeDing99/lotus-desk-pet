@@ -56,6 +56,9 @@ const icons = {
   layers: icon("stack"), folder: icon("folder-open"),
   update: icon("arrows-clockwise"),
   edit: icon("sliders-horizontal"),
+  download: icon("download-simple"),
+  clock: icon("clock"),
+  skip: icon("arrow-line-right"),
 };
 
 const scriptEditorMarkup = library.scenarios.map((scenario) => `
@@ -125,6 +128,41 @@ app.innerHTML = `
       <button type="button" data-action="story" data-direction="lower-left">${icons.story}<span>话本</span></button>
       <button type="button" data-action="tease" data-direction="upper-left">${icons.tease}<span>调戏</span></button>
     </nav>
+
+    <section class="update-dialog-layer" data-update-dialog-layer hidden>
+      <article class="update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title" aria-describedby="update-dialog-summary">
+        <header class="update-dialog-header">
+          <span class="update-dialog-mark" aria-hidden="true">${icon("flower-lotus")}</span>
+          <span class="update-dialog-heading">
+            <small>DeskPet 更新</small>
+            <strong id="update-dialog-title">发现新版本啦</strong>
+            <span id="update-dialog-summary" data-update-version-summary>当前版本正在检查中…</span>
+          </span>
+          <button type="button" class="update-dialog-close" data-update-remind aria-label="稍后提醒">${icons.close}</button>
+        </header>
+
+        <section class="update-release-notes" aria-labelledby="update-notes-title">
+          <strong id="update-notes-title">这次带来了什么</strong>
+          <p data-update-notes>新的功能与稳定性改进。</p>
+        </section>
+
+        <section class="update-progress" data-update-progress aria-live="polite" hidden>
+          <span><strong data-update-progress-label>准备下载…</strong><output data-update-progress-value></output></span>
+          <progress max="100" value="0" data-update-progress-bar aria-label="更新下载进度"></progress>
+        </section>
+
+        <label class="update-auto-choice">
+          <input type="checkbox" data-update-auto />
+          <span><strong>以后自动下载并安装</strong><small>发现新版时自动完成，安装前仍会显示进度</small></span>
+        </label>
+
+        <footer class="update-dialog-actions">
+          <button type="button" class="update-secondary-action" data-update-skip>${icons.skip}<span>跳过此版本</span></button>
+          <button type="button" class="update-secondary-action" data-update-remind>${icons.clock}<span>稍后提醒</span></button>
+          <button type="button" class="update-primary-action" data-update-install>${icons.download}<span>立即安装</span></button>
+        </footer>
+      </article>
+    </section>
 
     <section class="status-cluster floating-panel" data-status-panel data-panel-key="status" aria-label="桌宠状态" hidden>
       <header data-panel-drag-handle title="拖动弹框"><h2 data-level-heading>Lv.1 陌生</h2><button type="button" class="panel-close" data-close-panel aria-label="关闭状态">${icons.close}</button></header>
@@ -250,6 +288,9 @@ let currentWeather: WeatherContext | null = null;
 let llmInFlight = false;
 let availableUpdate: Update | null = null;
 let updateInFlight = false;
+let updateInstalling = false;
+let updateAutoStartTimer: number | undefined;
+let updateDialogPreviousFocus: HTMLElement | null = null;
 let lastInteractionAt = Date.now();
 let teaseStreak = 0;
 let lastTeaseAt = 0;
@@ -281,6 +322,17 @@ const animationStatus = app.querySelector<HTMLElement>("[data-animation-status]"
 const clearAnimationButton = app.querySelector<HTMLButtonElement>("[data-clear-animation]")!;
 const updateStatus = app.querySelector<HTMLElement>("[data-update-status]")!;
 const updateButton = app.querySelector<HTMLButtonElement>("[data-check-update]")!;
+const updateDialogLayer = app.querySelector<HTMLElement>("[data-update-dialog-layer]")!;
+const updateVersionSummary = app.querySelector<HTMLElement>("[data-update-version-summary]")!;
+const updateNotes = app.querySelector<HTMLElement>("[data-update-notes]")!;
+const updateProgress = app.querySelector<HTMLElement>("[data-update-progress]")!;
+const updateProgressLabel = app.querySelector<HTMLElement>("[data-update-progress-label]")!;
+const updateProgressValue = app.querySelector<HTMLOutputElement>("[data-update-progress-value]")!;
+const updateProgressBar = app.querySelector<HTMLProgressElement>("[data-update-progress-bar]")!;
+const updateInstallButton = app.querySelector<HTMLButtonElement>("[data-update-install]")!;
+const updateSkipButton = app.querySelector<HTMLButtonElement>("[data-update-skip]")!;
+const updateRemindButtons = Array.from(app.querySelectorAll<HTMLButtonElement>("[data-update-remind]"));
+const updateAutoInput = app.querySelector<HTMLInputElement>("[data-update-auto]")!;
 const weatherStatus = app.querySelector<HTMLElement>("[data-weather-status]")!;
 const weatherButton = app.querySelector<HTMLButtonElement>("[data-query-weather]")!;
 const panelElements: Record<PanelKey, HTMLElement> = {
@@ -291,6 +343,29 @@ const panelElements: Record<PanelKey, HTMLElement> = {
 };
 
 const PANEL_LAYOUT_KEY = "lotus-desk-pet/panel-layouts/v1";
+const UPDATE_PREFERENCES_KEY = "lotus-desk-pet/update-preferences/v1";
+const UPDATE_REMIND_DELAY = 24 * 60 * 60 * 1000;
+type UpdatePreferences = { skippedVersion: string; remindAfter: number; autoInstall: boolean };
+type UpdatePresentation = Pick<Update, "currentVersion" | "version" | "body">;
+
+function loadUpdatePreferences(): UpdatePreferences {
+  try {
+    const saved = JSON.parse(localStorage.getItem(UPDATE_PREFERENCES_KEY) ?? "null") as Partial<UpdatePreferences> | null;
+    return {
+      skippedVersion: typeof saved?.skippedVersion === "string" ? saved.skippedVersion : "",
+      remindAfter: typeof saved?.remindAfter === "number" && Number.isFinite(saved.remindAfter) ? saved.remindAfter : 0,
+      autoInstall: saved?.autoInstall === true,
+    };
+  } catch {
+    return { skippedVersion: "", remindAfter: 0, autoInstall: false };
+  }
+}
+
+let updatePreferences = loadUpdatePreferences();
+
+function saveUpdatePreferences() {
+  localStorage.setItem(UPDATE_PREFERENCES_KEY, JSON.stringify(updatePreferences));
+}
 const panelMinimums: Record<PanelKey, { width: number; height: number }> = {
   dialogue: { width: 260, height: 48 },
   status: { width: 220, height: 140 },
@@ -332,17 +407,85 @@ function setConnectionState(kind: "idle" | "loading" | "success" | "error", mess
   connectionBadge.textContent = kind === "success" ? "已连接" : kind === "loading" ? "连接中" : kind === "error" ? "需检查" : profile.aiEnabled ? "待连接" : "未启用";
 }
 
+function setUpdateDialogBusy(busy: boolean) {
+  updateInstalling = busy;
+  updateInstallButton.disabled = busy;
+  updateSkipButton.disabled = busy;
+  updateRemindButtons.forEach((button) => { button.disabled = busy; });
+  updateAutoInput.disabled = busy;
+  updateDialogLayer.dataset.installing = busy ? "true" : "false";
+}
+
+function formatReleaseNotes(body: string | undefined) {
+  return (body || "这个版本包含新的功能、体验优化与稳定性改进。")
+    .replace(/\r\n/g, "\n")
+    .replace(/<!--[^]*?-->/g, "")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*]\s+/gm, "• ")
+    .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function showUpdateDialog(update: UpdatePresentation, autoStart = false) {
+  updateDialogPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  closeWheel();
+  hidePanels();
+  hideBubble(true);
+  updateVersionSummary.textContent = `v${update.currentVersion} → v${update.version}`;
+  const notes = formatReleaseNotes(update.body);
+  updateNotes.textContent = notes.length > 1200 ? `${notes.slice(0, 1200).trim()}…` : notes;
+  updateProgress.hidden = true;
+  updateProgressBar.value = 0;
+  updateProgressLabel.textContent = "准备下载…";
+  updateProgressValue.textContent = "";
+  updateAutoInput.checked = updatePreferences.autoInstall;
+  updateInstallButton.querySelector("span")!.textContent = "立即安装";
+  setUpdateDialogBusy(false);
+  updateDialogLayer.dataset.state = "ready";
+  updateDialogLayer.hidden = false;
+  requestAnimationFrame(() => updateInstallButton.focus());
+  if (autoStart) updateAutoStartTimer = window.setTimeout(() => void applyAvailableUpdate(), 520);
+}
+
+function hideUpdateDialog(restoreFocus = true) {
+  if (updateInstalling) return;
+  if (updateAutoStartTimer) window.clearTimeout(updateAutoStartTimer);
+  updateAutoStartTimer = undefined;
+  updateDialogLayer.hidden = true;
+  updateDialogLayer.dataset.state = "closed";
+  if (restoreFocus) updateDialogPreviousFocus?.focus();
+  updateDialogPreviousFocus = null;
+}
+
+function shouldPresentUpdate(version: string) {
+  if (updatePreferences.skippedVersion === version) return false;
+  return updatePreferences.remindAfter <= Date.now();
+}
+
 function updateDownloadStatus(event: DownloadEvent, progress: { received: number; total: number }) {
+  updateProgress.hidden = false;
   if (event.event === "Started") {
     progress.received = 0;
     progress.total = event.data.contentLength || 0;
     updateStatus.textContent = "正在下载更新…";
+    updateProgressLabel.textContent = "正在下载更新…";
+    updateProgressValue.textContent = progress.total ? "0%" : "";
+    if (progress.total) updateProgressBar.value = 0;
+    else updateProgressBar.removeAttribute("value");
   } else if (event.event === "Progress") {
     progress.received += event.data.chunkLength;
-    updateStatus.textContent = progress.total
-      ? `正在下载 ${Math.min(100, Math.round(progress.received / progress.total * 100))}%`
-      : "正在下载更新…";
-  } else updateStatus.textContent = "正在安装并重新启动…";
+    const percentage = progress.total ? Math.min(100, Math.round(progress.received / progress.total * 100)) : 0;
+    updateStatus.textContent = progress.total ? `正在下载 ${percentage}%` : "正在下载更新…";
+    updateProgressLabel.textContent = "正在下载更新…";
+    updateProgressValue.textContent = progress.total ? `${percentage}%` : "";
+    if (progress.total) updateProgressBar.value = percentage;
+  } else {
+    updateStatus.textContent = "正在安装并重新启动…";
+    updateProgressLabel.textContent = "正在安装，马上回来…";
+    updateProgressValue.textContent = "100%";
+    updateProgressBar.value = 100;
+  }
 }
 
 async function checkForUpdates(announce: boolean) {
@@ -359,8 +502,11 @@ async function checkForUpdates(announce: boolean) {
     availableUpdate = await findAppUpdate();
     if (availableUpdate) {
       updateStatus.textContent = `发现新版本 v${availableUpdate.version}`;
-      updateButton.textContent = "立即更新";
-      if (announce) showBubble(`发现新版本 ${availableUpdate.version}，可以在话本里更新啦。`, 7000);
+      updateButton.textContent = "查看更新";
+      if (announce || shouldPresentUpdate(availableUpdate.version)) {
+        const autoStart = !announce && updatePreferences.autoInstall;
+        showUpdateDialog(availableUpdate, autoStart);
+      }
     } else {
       updateStatus.textContent = `当前已是最新版 v${packageInfo.version}`;
       updateButton.textContent = "再次检查";
@@ -379,6 +525,9 @@ async function applyAvailableUpdate() {
   if (!availableUpdate || updateInFlight) return;
   updateInFlight = true;
   updateButton.disabled = true;
+  setUpdateDialogBusy(true);
+  updateDialogLayer.dataset.state = "installing";
+  updateInstallButton.querySelector("span")!.textContent = "正在安装";
   const progress = { received: 0, total: 0 };
   try {
     await installAppUpdate(availableUpdate, (event) => updateDownloadStatus(event, progress));
@@ -386,7 +535,14 @@ async function applyAvailableUpdate() {
     updateStatus.textContent = "更新安装失败，可稍后重试";
     updateButton.disabled = false;
     updateInFlight = false;
-    showBubble(error instanceof Error ? `更新没有安装成功：${error.message}` : "更新没有安装成功。", 7500);
+    setUpdateDialogBusy(false);
+    updateDialogLayer.dataset.state = "error";
+    updateInstallButton.querySelector("span")!.textContent = "重新安装";
+    updateProgress.hidden = false;
+    updateProgressLabel.textContent = "安装没有完成，请检查网络后重试。";
+    updateProgressValue.textContent = "";
+    updateProgressBar.value = 0;
+    if (updateDialogLayer.hidden && availableUpdate) showUpdateDialog(availableUpdate);
   }
 }
 
@@ -1117,8 +1273,34 @@ app.querySelector("[data-test-api]")?.addEventListener("click", async () => {
 });
 
 updateButton.addEventListener("click", () => {
-  if (availableUpdate) void applyAvailableUpdate();
+  if (availableUpdate) showUpdateDialog(availableUpdate);
   else void checkForUpdates(true);
+});
+
+updateInstallButton.addEventListener("click", () => void applyAvailableUpdate());
+updateSkipButton.addEventListener("click", () => {
+  if (availableUpdate) updatePreferences.skippedVersion = availableUpdate.version;
+  updatePreferences.remindAfter = 0;
+  saveUpdatePreferences();
+  hideUpdateDialog();
+});
+updateRemindButtons.forEach((button) => button.addEventListener("click", () => {
+  updatePreferences.remindAfter = Date.now() + UPDATE_REMIND_DELAY;
+  saveUpdatePreferences();
+  hideUpdateDialog();
+}));
+updateAutoInput.addEventListener("change", () => {
+  updatePreferences.autoInstall = updateAutoInput.checked;
+  saveUpdatePreferences();
+});
+updateDialogLayer.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  const focusable = Array.from(updateDialogLayer.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled)"));
+  if (!focusable.length) return;
+  const first = focusable[0]!;
+  const last = focusable[focusable.length - 1]!;
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 });
 
 const characterFileInput = app.querySelector<HTMLInputElement>("[data-character-file]")!;
@@ -1241,7 +1423,16 @@ document.addEventListener("pointerdown", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   noteInteraction();
-  if (event.key === "Escape") { if (!wheel.hidden) closeWheel(); else hidePanels(); }
+  if (event.key === "Escape") {
+    if (!updateDialogLayer.hidden) {
+      if (!updateInstalling) {
+        updatePreferences.remindAfter = Date.now() + UPDATE_REMIND_DELAY;
+        saveUpdatePreferences();
+        hideUpdateDialog();
+      }
+    } else if (!wheel.hidden) closeWheel();
+    else hidePanels();
+  }
 });
 window.addEventListener("resize", positionAttachedUi);
 
@@ -1249,4 +1440,11 @@ window.setInterval(() => { state = applyElapsedDecay(state); renderState(); }, 6
 petLayer.style.setProperty("--drag-x", `${state.position.x}px`); petLayer.style.setProperty("--drag-y", `${state.position.y}px`);
 petWindow.style.setProperty("--ui-drag-x", `${state.position.x}px`); petWindow.style.setProperty("--ui-drag-y", `${state.position.y}px`);
 applyCharacterAppearance(); renderInventoryCatalog(); renderState(); hideBubble(true); scheduleAmbient(); scheduleSedentary(); scheduleLivingMotion(); void refreshWeather();
-window.setTimeout(() => void checkForUpdates(false), 8000);
+const updatePreviewMode = !isDesktopRuntime() && new URLSearchParams(window.location.search).has("update-preview");
+if (updatePreviewMode) {
+  window.setTimeout(() => showUpdateDialog({
+    currentVersion: packageInfo.version,
+    version: "0.1.4",
+    body: "新增启动时自动更新提醒。\n支持稍后提醒、跳过当前版本，并优化下载进度与安装反馈。",
+  }), 420);
+} else window.setTimeout(() => void checkForUpdates(false), 8000);

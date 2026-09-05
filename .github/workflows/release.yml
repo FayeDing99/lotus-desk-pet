@@ -51,10 +51,7 @@ jobs:
           args: ${{ matrix.build_args }}
           tagName: ${{ github.ref_name }}
           releaseName: DeskPet ${{ github.ref_name }}
-          releaseBody: |
-            桌宠桌面版自动构建。请选择与你的系统匹配的安装包。
-
-            本版本的更新内容请查看仓库提交记录。
+          generateReleaseNotes: true
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true
