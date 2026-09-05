@@ -34,6 +34,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .pet-window {
   --bubble-width: 240px;
+  --bubble-height: 88px;
   --bubble-left: 18%;
   --bubble-top: 30%;
   --bubble-font: 15px;
@@ -61,27 +62,30 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   left: var(--bubble-left);
   top: var(--bubble-top);
   width: var(--bubble-width);
-  aspect-ratio: 2.72;
+  height: var(--bubble-height);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 2.8% 4% 4.2%;
+  padding: 15px 18px 22px;
   opacity: 0;
   transform: translateY(6px) scale(0.985);
   transform-origin: 38% 100%;
   transition: opacity 180ms ease, transform 300ms var(--ease-pop);
   pointer-events: none;
+  overflow: hidden;
 }
 .speech-plate {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: fill;
   filter: saturate(0.48) brightness(1.05) drop-shadow(0 6px 9px rgba(70, 86, 73, 0.055));
   opacity: 0.97;
   pointer-events: none;
 }
+.speech-sheet[data-placement="below"] { transform-origin: 38% 0%; }
+.speech-sheet[data-placement="below"] .speech-plate { transform: scaleY(-1); }
 .speech-sheet.is-visible { opacity: 1; transform: none; }
 .speech-text {
   position: relative;
@@ -95,6 +99,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   letter-spacing: 0.055em;
   text-align: center;
   text-wrap: balance;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-break: strict;
 }
 .speech-text.is-changing { animation: bubble-copy-in 420ms cubic-bezier(0.16, 1, 0.3, 1); }
 

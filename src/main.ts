@@ -294,6 +294,9 @@ let updateDialogPreviousFocus: HTMLElement | null = null;
 let lastInteractionAt = Date.now();
 let teaseStreak = 0;
 let lastTeaseAt = 0;
+type NormalizedVisualBounds = { left: number; top: number; right: number; bottom: number };
+let characterVisualBounds: NormalizedVisualBounds = { left: 0.08, top: 0.12, right: 0.92, bottom: 0.96 };
+let characterBoundsGeneration = 0;
 
 const petWindow = app.querySelector<HTMLElement>("[data-pet-window]")!;
 const bubble = app.querySelector<HTMLElement>("[data-bubble]")!;
@@ -556,27 +559,112 @@ function playPetReaction(kind: "poke" | "happy") {
   replayClass(clickBloom, kind === "poke" ? "is-poke-blooming" : "is-blooming", 900);
 }
 
+function speechTextUnits(text: string) {
+  return Array.from(text.trim()).reduce((total, character) => total + (/\s/.test(character) ? 0.3 : /[\u0000-\u00ff]/.test(character) ? 0.58 : 1), 0);
+}
+
+async function readImageVisualBounds(image: HTMLImageElement): Promise<NormalizedVisualBounds | null> {
+  try {
+    if (!image.complete || !image.naturalWidth || !image.naturalHeight) await image.decode();
+    if (!image.naturalWidth || !image.naturalHeight) return null;
+    const sampleScale = Math.min(1, 256 / Math.max(image.naturalWidth, image.naturalHeight));
+    const width = Math.max(1, Math.round(image.naturalWidth * sampleScale));
+    const height = Math.max(1, Math.round(image.naturalHeight * sampleScale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width; canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return null;
+    context.drawImage(image, 0, 0, width, height);
+    const pixels = context.getImageData(0, 0, width, height).data;
+    let minX = width; let minY = height; let maxX = -1; let maxY = -1;
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        if (pixels[(y * width + x) * 4 + 3] < 18) continue;
+        minX = Math.min(minX, x); minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+      }
+    }
+    if (maxX < minX || maxY < minY) return null;
+    const padding = 2;
+    return {
+      left: Math.max(0, (minX - padding) / width),
+      top: Math.max(0, (minY - padding) / height),
+      right: Math.min(1, (maxX + padding + 1) / width),
+      bottom: Math.min(1, (maxY + padding + 1) / height),
+    };
+  } catch { return null; }
+}
+
+async function refreshCharacterVisualBounds() {
+  const generation = ++characterBoundsGeneration;
+  const images = animationPack
+    ? Array.from(characterStage.querySelectorAll<HTMLImageElement>(".oc-layer"))
+    : [character];
+  const bounds = (await Promise.all(images.map(readImageVisualBounds))).filter((value): value is NormalizedVisualBounds => Boolean(value));
+  if (generation !== characterBoundsGeneration || !bounds.length) return;
+  characterVisualBounds = bounds.reduce<NormalizedVisualBounds>((union, current) => ({
+    left: Math.min(union.left, current.left), top: Math.min(union.top, current.top),
+    right: Math.max(union.right, current.right), bottom: Math.max(union.bottom, current.bottom),
+  }), bounds[0]);
+  positionAttachedUi();
+}
+
+function visibleCharacterRect(stageRect: DOMRect) {
+  const referenceImage = animationPack
+    ? characterStage.querySelector<HTMLImageElement>(".oc-layer")
+    : character;
+  const naturalWidth = referenceImage?.naturalWidth || 1;
+  const naturalHeight = referenceImage?.naturalHeight || 1;
+  const objectScale = Math.min(stageRect.width / naturalWidth, stageRect.height / naturalHeight);
+  const objectWidth = naturalWidth * objectScale;
+  const objectHeight = naturalHeight * objectScale;
+  const objectLeft = stageRect.left + (stageRect.width - objectWidth) / 2;
+  const objectTop = stageRect.bottom - objectHeight;
+  return {
+    left: objectLeft + objectWidth * characterVisualBounds.left,
+    top: objectTop + objectHeight * characterVisualBounds.top,
+    right: objectLeft + objectWidth * characterVisualBounds.right,
+    bottom: objectTop + objectHeight * characterVisualBounds.bottom,
+  };
+}
+
 function positionAttachedUi() {
   const windowRect = petWindow.getBoundingClientRect();
   const stageRect = characterStage.getBoundingClientRect();
   if (!windowRect.width || !windowRect.height || !stageRect.width || !stageRect.height) return;
 
-  const stageLeft = stageRect.left - windowRect.left;
-  const stageTop = stageRect.top - windowRect.top;
-  const visibleLeft = stageLeft + stageRect.width * 0.07;
-  const visibleRight = stageLeft + stageRect.width * 0.94;
-  const visibleTop = stageTop + stageRect.height * 0.31;
-  const visibleBottom = stageTop + stageRect.height * 0.91;
+  const visualRect = visibleCharacterRect(stageRect);
+  const visibleLeft = visualRect.left - windowRect.left;
+  const visibleRight = visualRect.right - windowRect.left;
+  const visibleTop = visualRect.top - windowRect.top;
+  const visibleBottom = visualRect.bottom - windowRect.top;
 
-  // The speech plate's tail sits at roughly 31% of its width. Point it at the
-  // top-left side of the character's head instead of positioning it by viewport.
-  const bubbleWidth = clampBetween(windowRect.width * (0.35 + attachedUiScale * 0.045), 218, 286);
-  const bubbleHeight = bubbleWidth / 2.72;
-  const speechTargetX = stageLeft + stageRect.width * 0.34;
-  const speechTargetY = visibleTop - 4;
-  const bubbleLeft = clampBetween(speechTargetX - bubbleWidth * 0.31, 8, windowRect.width - bubbleWidth - 8);
-  const bubbleTop = clampBetween(speechTargetY - bubbleHeight + 3, 8, windowRect.height - bubbleHeight - 8);
+  // Keep text readable independently of the OC scale. Short lines stay compact;
+  // longer model replies receive more width and height before they are placed.
+  const textUnits = Math.max(1, speechTextUnits(bubbleText.textContent || ""));
+  const maximumBubbleWidth = Math.min(344, windowRect.width - 16);
+  const bubbleWidth = clampBetween(178 + Math.sqrt(textUnits) * 14.5, Math.min(204, maximumBubbleWidth), maximumBubbleWidth);
   petWindow.style.setProperty("--bubble-width", `${bubbleWidth}px`);
+
+  const computedText = window.getComputedStyle(bubbleText);
+  const lineHeight = Number.parseFloat(computedText.lineHeight) || Number.parseFloat(computedText.fontSize) * 1.42;
+  const measuredTextHeight = bubble.hidden ? lineHeight : Math.max(lineHeight, bubbleText.scrollHeight);
+  const bubbleHeight = Math.max(72, measuredTextHeight + 37);
+  const speechGap = clampBetween(18 + (1 - attachedUiScale) * 10, 18, 28);
+
+  // The plate tail sits at roughly 31% of its width. Prefer the space above the
+  // head; if the OC has been moved too high, flip the plate into the clear space
+  // below instead of allowing either surface to cover the other.
+  const speechTargetX = visibleLeft + (visibleRight - visibleLeft) * 0.38;
+  const bubbleLeft = clampBetween(speechTargetX - bubbleWidth * 0.31, 8, windowRect.width - bubbleWidth - 8);
+  const availableAbove = visibleTop - speechGap - 8;
+  const availableBelow = windowRect.height - visibleBottom - speechGap - 8;
+  const placeAbove = availableAbove >= bubbleHeight || availableAbove >= availableBelow;
+  const bubbleTop = placeAbove
+    ? Math.max(8, visibleTop - speechGap - bubbleHeight)
+    : Math.min(windowRect.height - bubbleHeight - 8, visibleBottom + speechGap);
+  bubble.dataset.placement = placeAbove ? "above" : "below";
+  petWindow.style.setProperty("--bubble-height", `${bubbleHeight}px`);
   petWindow.style.setProperty("--bubble-left", `${bubbleLeft}px`);
   petWindow.style.setProperty("--bubble-top", `${bubbleTop}px`);
 
@@ -681,7 +769,7 @@ function applyAttachedUiLayout(target: OCProfile) {
   attachedUiScale = target.imageScale;
   const readableScale = clampBetween(0.84 + target.imageScale * 0.16, 0.9, 1.06);
   const chatWidth = clampBetween(petWindow.clientWidth * (0.54 + target.imageScale * 0.08), 260, 410);
-  petWindow.style.setProperty("--bubble-font", `${clampBetween(14 * readableScale, 13, 16)}px`);
+  petWindow.style.setProperty("--bubble-font", `${clampBetween(14.5 * readableScale, 14, 16)}px`);
   petWindow.style.setProperty("--chat-width", `${chatWidth}px`);
   petWindow.style.setProperty("--chat-font", `${clampBetween(15 * readableScale, 14, 17)}px`);
   requestAnimationFrame(positionAttachedUi);
@@ -717,6 +805,7 @@ function applyCharacterAppearance() {
   petLayer.style.setProperty("--oc-x", `${profile.imageX}%`);
   petLayer.style.setProperty("--oc-y", `${profile.imageY}%`);
   applyAttachedUiLayout(profile);
+  void refreshCharacterVisualBounds();
   petWindow.setAttribute("aria-label", `${profile.name}桌宠`);
   document.title = profile.name;
 }
