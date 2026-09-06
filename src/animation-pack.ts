@@ -203,8 +203,6 @@ export async function parsePsdFile(file: File): Promise<OCAnimationPack> {
     if (!width || !height) throw new Error("PSD 没有有效的画布尺寸。");
     if (width * height > PSD_MAX_CANVAS_PIXELS) throw new Error("PSD 画布过大，请将总像素控制在 3200 万以内。");
 
-    // Photoshop stores siblings from top to bottom. Reverse them so increasing
-    // z-index paints the document from its bottom layer to its top layer.
     const rootLayers = psd.children ?? [];
     const expressionGroups = rootLayers.flatMap((layer) => {
       const variant = layer.children?.length ? expressionVariantFromName(layer.name ?? "") : null;
@@ -238,7 +236,10 @@ export async function parsePsdFile(file: File): Promise<OCAnimationPack> {
       for (const [index, variant] of priority.entries()) {
         const group = selectedGroups.get(variant);
         if (!group) continue;
-        const dataUrl = await renderPsdLeaves(visiblePsdLeaves([group]).reverse(), width, height, getLayerCanvas);
+        // Expression folders exported by drawing apps can expose their children
+        // in paint order already. Keep the source order here: reversing the
+        // flattened list moves background props in front of the character.
+        const dataUrl = await renderPsdLeaves(visiblePsdLeaves([group]), width, height, getLayerCanvas);
         if (!dataUrl) continue;
         encodedCharacters += dataUrl.length;
         layers.push({ id: `psd-expression-${variant}`, name: group.name?.trim() || variant, role: "static", variant, zIndex: index, anchorX: 50, anchorY: 72, dataUrl });
