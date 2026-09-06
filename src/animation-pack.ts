@@ -1,4 +1,5 @@
 export type OCLayerRole = "background" | "hair-back" | "body" | "head" | "eyes" | "mouth" | "hair-front" | "accessory" | "foreground" | "static";
+export type OCExpressionVariant = "idle" | "blink" | "happy" | "annoyed" | "surprised";
 
 export interface OCLayer {
   id: string;
@@ -8,6 +9,7 @@ export interface OCLayer {
   anchorX: number;
   anchorY: number;
   dataUrl: string;
+  variant?: OCExpressionVariant;
 }
 
 export interface OCAnimationPack {
@@ -86,11 +88,21 @@ function roleFromName(name: string): OCLayerRole {
   if (/front.?hair|前发|前髮|bang/.test(value)) return "hair-front";
   if (/eye|眼/.test(value)) return "eyes";
   if (/mouth|嘴|口/.test(value)) return "mouth";
+  if (/accessory|饰品|飾品|装饰|裝飾|发饰|髮飾|头饰|頭飾|服饰|服飾|眼镜|眼鏡/.test(value)) return "accessory";
   if (/head|face|头|頭|脸|臉/.test(value)) return "head";
-  if (/body|身体|身體|torso/.test(value)) return "body";
+  if (/body|身体|身體|torso|人物主体|人物主體|躯干|軀幹/.test(value)) return "body";
   if (/foreground|前景/.test(value)) return "foreground";
-  if (/accessory|饰品|飾品|装饰|裝飾/.test(value)) return "accessory";
   return "static";
+}
+
+function expressionVariantFromName(name: string): OCExpressionVariant | null {
+  const value = name.toLowerCase();
+  if (/(睁眼|开眼|開眼|open.?eye|neutral|default|待机|待機|idle)/.test(value)) return "idle";
+  if (/(闭眼|閉眼|close.?eye|blink)/.test(value)) return "blink";
+  if (/(微笑|开心|開心|笑|happy|smile)/.test(value)) return "happy";
+  if (/(无语|無語|生气|生氣|angry|annoy|speechless)/.test(value)) return "annoyed";
+  if (/(呆住|惊讶|驚訝|震惊|surprise|stun)/.test(value)) return "surprised";
+  return null;
 }
 
 const PSD_MAX_FILE_BYTES = 160 * 1024 * 1024;
@@ -101,12 +113,17 @@ const PSD_MAX_LAYERS = 64;
 type PsdLayer = import("ag-psd").Layer;
 type PsdLeaf = { layer: PsdLayer; path: string; opacity: number };
 
+function normalizedPsdOpacity(value: number | undefined) {
+  if (value === undefined) return 1;
+  return Math.max(0, Math.min(1, value > 1 ? value / 255 : value));
+}
+
 function visiblePsdLeaves(layers: PsdLayer[], parentPath = "", parentVisible = true, parentOpacity = 1): PsdLeaf[] {
   const leaves: PsdLeaf[] = [];
   for (const layer of layers) {
     const name = layer.name?.trim() || "未命名图层";
     const path = parentPath ? `${parentPath}/${name}` : name;
-    const opacity = parentOpacity * Math.max(0, Math.min(1, (layer.opacity ?? 255) / 255));
+    const opacity = parentOpacity * normalizedPsdOpacity(layer.opacity);
     const visible = parentVisible && layer.hidden !== true && opacity > 0;
     if (layer.children?.length) leaves.push(...visiblePsdLeaves(layer.children, path, visible, opacity));
     else if (visible) leaves.push({ layer, path, opacity });
@@ -134,6 +151,39 @@ function canvasToPngDataUrl(canvas: HTMLCanvasElement) {
   });
 }
 
+async function renderPsdLeaves(
+  leaves: PsdLeaf[],
+  width: number,
+  height: number,
+  getLayerCanvas: typeof import("ag-psd").getLayerCanvas,
+) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("当前系统无法创建 PSD 图层画布。");
+  let painted = false;
+  for (const item of leaves) {
+    const source = getLayerCanvas(item.layer) ?? item.layer.canvas;
+    if (!source?.width || !source.height || !canvasHasVisiblePixels(source)) { item.layer.rawData = undefined; continue; }
+    context.globalAlpha = item.opacity;
+    const fullCanvasLayer = source.width === width && source.height === height;
+    context.drawImage(source, fullCanvasLayer ? 0 : (item.layer.left ?? 0), fullCanvasLayer ? 0 : (item.layer.top ?? 0));
+    item.layer.rawData = undefined;
+    painted = true;
+  }
+  return painted ? canvasToPngDataUrl(canvas) : null;
+}
+
+function readablePsdError(error: unknown) {
+  const message = error instanceof Error ? error.message.trim() : "";
+  if (/^(PSD |这个 PSD|当前系统)/.test(message)) return message;
+  if (/memory|allocation|array buffer/i.test(message)) return "PSD 解析时内存不足，请关闭大型应用后重试，或在 Photoshop 中合并无需动画的图层。";
+  if (/signature|invalid file|unexpected end|offset/i.test(message)) return "PSD 文件结构无法读取，请在 Photoshop 中另存为标准 PSD 后重试。";
+  if (/color mode|bitsperchannel|channel not supported/i.test(message)) return "PSD 的颜色模式或位深不受支持，请转换为 RGB、8 位/通道后重试。";
+  return message ? `PSD 解析失败：${message.slice(0, 96)}。请在 Photoshop 中重新保存后再试。` : "PSD 没有解析成功，请确认它是未损坏的 RGB 分层 PSD。";
+}
+
 export async function parsePsdFile(file: File): Promise<OCAnimationPack> {
   if (!/\.psd$/i.test(file.name) && file.type !== "image/vnd.adobe.photoshop") throw new Error("请选择 .psd 分层文件。");
   if (!file.size) throw new Error("这个 PSD 是空文件。");
@@ -145,6 +195,7 @@ export async function parsePsdFile(file: File): Promise<OCAnimationPack> {
       skipCompositeImageData: true,
       skipThumbnail: true,
       skipLinkedFilesData: true,
+      useRawData: true,
       totalMemoryLimit: PSD_MAX_MEMORY_BYTES,
     });
     const width = Math.round(psd.width);
@@ -154,38 +205,64 @@ export async function parsePsdFile(file: File): Promise<OCAnimationPack> {
 
     // Photoshop stores siblings from top to bottom. Reverse them so increasing
     // z-index paints the document from its bottom layer to its top layer.
-    const leaves = visiblePsdLeaves(psd.children ?? []).reverse();
+    const rootLayers = psd.children ?? [];
+    const expressionGroups = rootLayers.flatMap((layer) => {
+      const variant = layer.children?.length ? expressionVariantFromName(layer.name ?? "") : null;
+      return variant && layer.hidden !== true ? [{ layer, variant }] : [];
+    });
+    const hasExpressionGroups = new Set(expressionGroups.map(({ variant }) => variant)).size >= 2;
+    const leaves = visiblePsdLeaves(rootLayers).reverse();
     if (!leaves.length) throw new Error("PSD 中没有找到可见图层。");
-    if (leaves.length > PSD_MAX_LAYERS) throw new Error(`PSD 有 ${leaves.length} 个可见图层，基础版最多支持 ${PSD_MAX_LAYERS} 个。`);
+    if (!hasExpressionGroups && leaves.length > PSD_MAX_LAYERS) throw new Error(`PSD 有 ${leaves.length} 个可见图层，基础版最多支持 ${PSD_MAX_LAYERS} 个。`);
+    if (hasExpressionGroups && leaves.length > 160) throw new Error(`PSD 有 ${leaves.length} 个表情源图层，请先合并到 160 个以内。`);
 
     const layers: OCLayer[] = [];
     let encodedCharacters = 0;
-    for (const [index, item] of leaves.entries()) {
-      const source = getLayerCanvas(item.layer) ?? item.layer.canvas;
-      if (!source?.width || !source.height || !canvasHasVisiblePixels(source)) continue;
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext("2d");
-      if (!context) throw new Error("当前系统无法创建 PSD 图层画布。");
-      context.globalAlpha = item.opacity;
-      const fullCanvasLayer = source.width === width && source.height === height;
-      context.drawImage(source, fullCanvasLayer ? 0 : (item.layer.left ?? 0), fullCanvasLayer ? 0 : (item.layer.top ?? 0));
-      const dataUrl = await canvasToPngDataUrl(canvas);
-      encodedCharacters += dataUrl.length;
-      if (encodedCharacters > 120 * 1024 * 1024) throw new Error("PSD 解析后的图层过大，请合并无需动画的图层后再导入。");
-      const role = roleFromName(item.path);
-      layers.push({
-        id: `psd-layer-${index + 1}`,
-        name: item.layer.name?.trim() || `图层 ${index + 1}`,
-        role,
-        zIndex: index,
-        anchorX: 50,
-        anchorY: role === "eyes" || role === "mouth" || role === "head" ? 42 : 72,
-        dataUrl,
-      });
-      if ((index + 1) % 4 === 0) await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    if (hasExpressionGroups) {
+      const selectedGroups = new Map<OCExpressionVariant, PsdLayer>();
+      for (const item of expressionGroups) if (!selectedGroups.has(item.variant)) selectedGroups.set(item.variant, item.layer);
+      if (!selectedGroups.has("idle")) {
+        const first = selectedGroups.entries().next().value as [OCExpressionVariant, PsdLayer] | undefined;
+        if (first) { selectedGroups.delete(first[0]); selectedGroups.set("idle", first[1]); }
+      }
+      const expressionRoots = new Set(expressionGroups.map(({ layer }) => layer));
+      const commonLeaves = visiblePsdLeaves(rootLayers.filter((layer) => !expressionRoots.has(layer))).reverse();
+      if (commonLeaves.length) {
+        const dataUrl = await renderPsdLeaves(commonLeaves, width, height, getLayerCanvas);
+        if (dataUrl) {
+          encodedCharacters += dataUrl.length;
+          layers.push({ id: "psd-common", name: "公用图层", role: "static", zIndex: -1, anchorX: 50, anchorY: 72, dataUrl });
+        }
+      }
+      const priority: OCExpressionVariant[] = ["idle", "blink", "happy", "surprised", "annoyed"];
+      for (const [index, variant] of priority.entries()) {
+        const group = selectedGroups.get(variant);
+        if (!group) continue;
+        const dataUrl = await renderPsdLeaves(visiblePsdLeaves([group]).reverse(), width, height, getLayerCanvas);
+        if (!dataUrl) continue;
+        encodedCharacters += dataUrl.length;
+        layers.push({ id: `psd-expression-${variant}`, name: group.name?.trim() || variant, role: "static", variant, zIndex: index, anchorX: 50, anchorY: 72, dataUrl });
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+    } else {
+      for (const [index, item] of leaves.entries()) {
+        const dataUrl = await renderPsdLeaves([item], width, height, getLayerCanvas);
+        if (!dataUrl) continue;
+        encodedCharacters += dataUrl.length;
+        const role = roleFromName(item.path);
+        layers.push({
+          id: `psd-layer-${index + 1}`,
+          name: item.layer.name?.trim() || `图层 ${index + 1}`,
+          role,
+          zIndex: index,
+          anchorX: 50,
+          anchorY: role === "eyes" || role === "mouth" || role === "head" ? 42 : 72,
+          dataUrl,
+        });
+        if ((index + 1) % 4 === 0) await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
     }
+    if (encodedCharacters > 120 * 1024 * 1024) throw new Error("PSD 解析后的图层过大，请合并无需动画的图层后再导入。");
     if (!layers.length) throw new Error("PSD 的可见图层里没有可读取的像素内容。");
 
     return {
@@ -197,8 +274,7 @@ export async function parsePsdFile(file: File): Promise<OCAnimationPack> {
       source: "psd",
     };
   } catch (error) {
-    if (error instanceof Error && (/^PSD |PSD /.test(error.message) || error.message.includes("当前系统"))) throw error;
-    throw new Error("PSD 没有解析成功，请确认它是未损坏的 RGB 分层 PSD。");
+    throw new Error(readablePsdError(error));
   }
 }
 
@@ -267,5 +343,7 @@ export async function parseAnimationFolder(files: FileList | File[]): Promise<OC
 
 export function packSummary(pack: OCAnimationPack) {
   const animated = new Set(pack.layers.map((layer) => layer.role).filter((role) => role !== "static" && role !== "background" && role !== "foreground"));
+  const expressions = new Set(pack.layers.map((layer) => layer.variant).filter(Boolean));
+  if (expressions.size) return `${pack.layers.length} 个合成图层 · ${expressions.size} 组表情动作`;
   return `${pack.layers.length} 个图层 · ${animated.size} 类基础动效`;
 }

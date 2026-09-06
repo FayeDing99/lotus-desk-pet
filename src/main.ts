@@ -795,6 +795,7 @@ function applyCharacterAppearance() {
       image.alt = "";
       image.draggable = false;
       image.dataset.role = layer.role;
+      if (layer.variant) image.dataset.variant = layer.variant;
       image.style.zIndex = String(layer.zIndex);
       image.style.setProperty("--layer-anchor-x", `${layer.anchorX}%`);
       image.style.setProperty("--layer-anchor-y", `${layer.anchorY}%`);
@@ -969,6 +970,7 @@ function doTease() {
   state.mood = clamp(state.mood + (annoyed ? -1 : 1));
   state.affection += annoyed ? 0 : 1;
   playPetReaction(annoyed ? "poke" : "happy");
+  replayClass(petMotion, annoyed ? "is-annoyed" : "is-shy", 1100);
   showBubble(randomFrom(linesFor(annoyed ? "teaseAngry" : "teaseShy")), 9000);
   renderState();
 }
@@ -1175,7 +1177,7 @@ async function usePsdFile(file: File) {
     await saveAnimationPack(parsed);
     animationPack = parsed;
     applyCharacterAppearance();
-    showBubble(`PSD 已自动拆成 ${parsed.layers.length} 个可见图层，基础动作装好啦。`, 8000);
+    showBubble(`PSD 已读取：${packSummary(parsed)}，动作装好啦。`, 8000);
   } catch (error) {
     animationPack = previous;
     applyCharacterAppearance();

@@ -163,6 +163,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .character-stage.is-layered .oc-layer[data-role="accessory"] { animation: layer-accessory 4.2s ease-in-out infinite alternate; }
 .pet-motion.is-talking .oc-layer[data-role="mouth"] { animation: layer-mouth-talk 280ms ease-in-out 6; }
 .pet-motion.is-happy .oc-layer[data-role="eyes"] { animation: layer-eye-happy 900ms var(--ease-pop); }
+.character-stage.is-layered .oc-layer[data-variant] { opacity: 0; animation: none; transition: opacity 90ms ease; }
+.character-stage.is-layered .oc-layer[data-variant="idle"] { opacity: 1; }
+.character-stage.is-layered .oc-layer[data-variant="blink"] { animation: psd-expression-blink 5.4s ease-in-out infinite; }
+.pet-motion.is-happy .oc-layer[data-variant="happy"], .pet-motion.is-shy .oc-layer[data-variant="happy"] { opacity: 1; }
+.pet-motion.is-poked .oc-layer[data-variant="surprised"] { opacity: 1; }
+.pet-motion.is-annoyed .oc-layer[data-variant="annoyed"] { opacity: 1; }
 .pet-motion.is-pressed { animation: none; transform: translateY(3px) rotate(-0.25deg) scale(0.982, 1.008); filter: drop-shadow(0 7px 8px rgba(53, 76, 87, 0.11)) brightness(1.018); }
 .pet-motion.is-poked { animation: poke-reaction 980ms var(--ease-pop); }
 .pet-motion.is-happy { animation: happy-reaction 900ms var(--ease-pop); }
@@ -770,6 +776,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @keyframes layer-accessory { from { transform: rotate(-0.45deg); } to { transform: rotate(0.7deg) translateY(0.5px); } }
 @keyframes layer-mouth-talk { 0%, 100% { transform: scaleY(0.72); } 50% { transform: scaleY(1.08); } }
 @keyframes layer-eye-happy { 0%, 100% { transform: scaleY(1); } 36%, 64% { transform: scaleY(0.3) translateY(1px); } }
+@keyframes psd-expression-blink { 0%, 91%, 96%, 100% { opacity: 0; } 92%, 95% { opacity: 1; } }
 @keyframes poke-reaction {
   0%, 100% { transform: translateY(0) rotate(0) scale(1); }
   10% { transform: translateY(5px) rotate(-0.65deg) scale(0.97, 1.025); }
