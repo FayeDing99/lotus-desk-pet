@@ -7,7 +7,7 @@ import "@fontsource/noto-serif-sc/chinese-simplified-400.css";
 import "@fontsource/noto-serif-sc/chinese-simplified-600.css";
 import "@phosphor-icons/web/regular";
 import type dialogueShape from "../public/dialogue.json";
-import { loadAnimationPack, packSummary, parseAnimationFolder, parsePsdFile, saveAnimationPack, type OCAnimationPack } from "./animation-pack";
+import { expressionOptions, loadAnimationPack, packSummary, parseAnimationFolder, parsePsdFile, saveAnimationPack, type OCAnimationPack } from "./animation-pack";
 import {
   INVENTORY_ITEM_KEYS,
   PROP_ITEM_KEYS,
@@ -24,7 +24,7 @@ import {
   type OCPack,
   type OCProfile,
 } from "./oc";
-import { describeLLMError, generateOCLine, providerDefaults } from "./llm";
+import { describeLLMError, generateOCLine, inferExpression, providerDefaults, type OCLineResult } from "./llm";
 import { affectionLabel, applyElapsedDecay, loadPetState, savePetState, type PetState } from "./state";
 import { fetchWeather, type WeatherContext } from "./weather";
 import { findAppUpdate, installAppUpdate, isDesktopRuntime, type DownloadEvent, type Update } from "./updater";
@@ -266,6 +266,7 @@ let profile: OCProfile = loadOCProfile();
 let attachedUiScale = profile.imageScale;
 let activePanel: PanelName = null;
 let bubbleTimer: number | undefined;
+let expressionTimer: number | undefined;
 let attachedUiTimer: number | undefined;
 let panelGesture: {
   key: PanelKey;
@@ -555,7 +556,7 @@ async function applyAvailableUpdate() {
 
 async function requestModelLine(mode: "chat" | "idle" | "weather" | "test", userPrompt = "") {
   if (!profile.aiEnabled && mode !== "test") throw new Error("大模型尚未启用。");
-  return generateOCLine({ profile, state, apiKey: apiKeyInput.value, userPrompt, weather: currentWeather, mode });
+  return generateOCLine({ profile, state, apiKey: apiKeyInput.value, userPrompt, weather: currentWeather, mode, expressions: expressionOptions(animationPack) });
 }
 
 function playPetReaction(kind: "poke" | "happy") {
@@ -782,6 +783,7 @@ function applyAttachedUiLayout(target: OCProfile) {
 }
 
 function applyCharacterAppearance() {
+  clearCharacterExpression();
   character.src = customImageDataUrl || petImageUrl;
   character.alt = `${profile.name}的桌宠形象`;
   characterStage.querySelectorAll(".oc-layer").forEach((layer) => layer.remove());
@@ -883,6 +885,7 @@ function readInventoryEditor(): InventoryCatalog {
 
 function hideBubble(immediate = false) {
   window.clearTimeout(bubbleTimer);
+  clearCharacterExpression();
   bubble.classList.remove("is-visible");
   if (immediate) bubble.hidden = true;
   else window.setTimeout(() => { if (!bubble.classList.contains("is-visible")) bubble.hidden = true; }, 220);
@@ -895,6 +898,42 @@ function showBubble(text: string, duration = 8500) {
   requestAnimationFrame(() => { positionAttachedUi(); bubble.classList.add("is-visible"); });
   replayClass(bubbleText, "is-changing", 420);
   bubbleTimer = window.setTimeout(() => hideBubble(), duration);
+}
+
+function clearCharacterExpression() {
+  window.clearTimeout(expressionTimer);
+  expressionTimer = undefined;
+  petMotion.classList.remove("is-context-motion");
+  characterStage.classList.remove("has-active-expression");
+  characterStage.querySelectorAll(".oc-layer.is-expression-active").forEach((layer) => layer.classList.remove("is-expression-active"));
+}
+
+function activateCharacterExpression(expression: string | null) {
+  if (!expression || expression === "idle") return false;
+  const matchingLayers = characterStage.querySelectorAll<HTMLElement>(`.oc-layer[data-variant="${CSS.escape(expression)}"]`);
+  if (!matchingLayers.length) return false;
+  characterStage.classList.add("has-active-expression");
+  matchingLayers.forEach((layer) => layer.classList.add("is-expression-active"));
+  return true;
+}
+
+function showCharacterLine(line: string | OCLineResult, duration = 8500, hint = "") {
+  const text = typeof line === "string" ? line : line.text;
+  const options = expressionOptions(animationPack);
+  const expression = typeof line === "string" ? inferExpression(text, options, hint) : line.expression ?? inferExpression(text, options, hint);
+  const motion = typeof line === "string" ? null : line.motion;
+  clearCharacterExpression();
+  if (motion && activateCharacterExpression(motion)) {
+    const motionDuration = Math.min(duration, 1800);
+    replayClass(petMotion, "is-context-motion", motionDuration);
+    expressionTimer = window.setTimeout(() => {
+      clearCharacterExpression();
+      if (activateCharacterExpression(expression)) expressionTimer = window.setTimeout(clearCharacterExpression, Math.max(0, duration - motionDuration));
+    }, motionDuration);
+  } else if (activateCharacterExpression(expression)) {
+    expressionTimer = window.setTimeout(clearCharacterExpression, duration);
+  }
+  showBubble(text, duration);
 }
 
 function closeWheel() { wheel.hidden = true; wheel.classList.remove("is-open"); }
@@ -959,7 +998,7 @@ function replyFor() { return randomFrom(linesFor("fallback")); }
 
 function doPoke() {
   state.mood = clamp(state.mood + 1); state.affection += 1;
-  playPetReaction("poke"); showBubble(randomFrom(linesFor("poke"))); renderState();
+  playPetReaction("poke"); showCharacterLine(randomFrom(linesFor("poke")), 8500, "surprised"); renderState();
 }
 
 function doTease() {
@@ -971,7 +1010,7 @@ function doTease() {
   state.affection += annoyed ? 0 : 1;
   playPetReaction(annoyed ? "poke" : "happy");
   replayClass(petMotion, annoyed ? "is-annoyed" : "is-shy", 1100);
-  showBubble(randomFrom(linesFor(annoyed ? "teaseAngry" : "teaseShy")), 9000);
+  showCharacterLine(randomFrom(linesFor(annoyed ? "teaseAngry" : "teaseShy")), 9000, annoyed ? "annoyed" : "shy");
   renderState();
 }
 
@@ -985,7 +1024,7 @@ function scheduleSedentary() {
   if (!profile.sedentaryEnabled) return;
   const delay = clampBetween(profile.sedentaryMinutes, 20, 240) * 60_000;
   sedentaryTimer = window.setTimeout(() => {
-    if (!state.quiet) showBubble(randomFrom(linesFor("sedentary")), 12_000);
+    if (!state.quiet) showCharacterLine(randomFrom(linesFor("sedentary")), 12_000, "sedentary");
     lastInteractionAt = Date.now();
     scheduleSedentary();
   }, delay);
@@ -999,10 +1038,10 @@ function scheduleAmbient() {
       const useAI = profile.aiEnabled && Math.random() < profile.aiIdleRatio;
       if (useAI && !llmInFlight) {
         llmInFlight = true;
-        try { showBubble(await requestModelLine("idle"), 10_000); }
-        catch { showBubble(ambientLine()); }
+        try { showCharacterLine(await requestModelLine("idle"), 10_000); }
+        catch { showCharacterLine(ambientLine()); }
         finally { llmInFlight = false; }
-      } else showBubble(ambientLine());
+      } else showCharacterLine(ambientLine());
     }
     scheduleAmbient();
   }, delay);
@@ -1026,10 +1065,10 @@ async function refreshWeather(announce = false) {
     if (announce) {
       if (profile.aiEnabled && !llmInFlight) {
         llmInFlight = true;
-        try { showBubble(await requestModelLine("weather"), 10_000); }
-        catch { showBubble(weatherLineFor(currentWeather)); }
+        try { showCharacterLine(await requestModelLine("weather"), 10_000); }
+        catch { showCharacterLine(weatherLineFor(currentWeather), 10_000, currentWeather.description); }
         finally { llmInFlight = false; }
-      } else showBubble(weatherLineFor(currentWeather));
+      } else showCharacterLine(weatherLineFor(currentWeather), 8500, currentWeather.description);
     }
   } catch (error) {
     currentWeather = null;
@@ -1338,7 +1377,7 @@ walletPanel.addEventListener("click", (event) => {
   state.energy = clamp(state.energy + item.energy);
   state.affection = Math.max(0, state.affection + item.affection);
   replayClass(button, "is-used", 420); playPetReaction("happy");
-  showBubble(item.lines.length ? randomFrom(item.lines) : item.kind === "snack" ? `${item.name}很好吃，谢谢你。` : `${item.name}已经用上啦。`);
+  showCharacterLine(item.lines.length ? randomFrom(item.lines) : item.kind === "snack" ? `${item.name}很好吃，谢谢你。` : `${item.name}已经用上啦。`, 8500, "happy");
   renderState();
 });
 
@@ -1347,10 +1386,10 @@ dialogueForm.addEventListener("submit", async (event) => {
   messageInput.value = ""; state.mood = clamp(state.mood + 1); state.affection += 1; noteInteraction();
   if (profile.aiEnabled) {
     llmInFlight = true; dialogueForm.classList.add("is-loading"); showBubble("让我想一想…", 45_000);
-    try { showBubble(await requestModelLine("chat", message), 12_000); }
-    catch { showBubble(replyFor(), 10_000); }
+    try { showCharacterLine(await requestModelLine("chat", message), 12_000); }
+    catch { showCharacterLine(replyFor(), 10_000); }
     finally { llmInFlight = false; dialogueForm.classList.remove("is-loading"); }
-  } else showBubble(replyFor(), 10_000);
+  } else showCharacterLine(replyFor(), 10_000);
   replayClass(petMotion, "is-talking", 1900); renderState(); messageInput.focus();
 });
 
@@ -1397,9 +1436,9 @@ app.querySelector("[data-test-api]")?.addEventListener("click", async () => {
   llmInFlight = true;
   setConnectionState("loading", "正在验证模型和密钥…");
   try {
-    const line = await generateOCLine({ profile: draftProfile, state, apiKey: apiKeyInput.value, userPrompt: "", weather: currentWeather, mode: "test" });
-    setConnectionState("success", `连接成功：${line}`);
-    showBubble(line, 8500);
+    const line = await generateOCLine({ profile: draftProfile, state, apiKey: apiKeyInput.value, userPrompt: "", weather: currentWeather, mode: "test", expressions: expressionOptions(animationPack) });
+    setConnectionState("success", `连接成功：${line.text}`);
+    showCharacterLine(line, 8500);
   } catch (error) {
     setConnectionState("error", describeLLMError(error));
   } finally { llmInFlight = false; }

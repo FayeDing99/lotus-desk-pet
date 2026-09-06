@@ -1,5 +1,11 @@
 export type OCLayerRole = "background" | "hair-back" | "body" | "head" | "eyes" | "mouth" | "hair-front" | "accessory" | "foreground" | "static";
-export type OCExpressionVariant = "idle" | "blink" | "happy" | "annoyed" | "surprised";
+export type OCExpressionVariant = string;
+
+export interface OCExpressionOption {
+  id: OCExpressionVariant;
+  label: string;
+  kind: "expression" | "motion";
+}
 
 export interface OCLayer {
   id: string;
@@ -97,12 +103,34 @@ function roleFromName(name: string): OCLayerRole {
 
 function expressionVariantFromName(name: string): OCExpressionVariant | null {
   const value = name.toLowerCase();
-  if (/(睁眼|开眼|開眼|open.?eye|neutral|default|待机|待機|idle)/.test(value)) return "idle";
+  if (/(睁眼|開眼|开眼|正常|平静|平靜|open.?eye|neutral|default|待机|待機|idle)/.test(value)) return "idle";
   if (/(闭眼|閉眼|close.?eye|blink)/.test(value)) return "blink";
   if (/(微笑|开心|開心|笑|happy|smile)/.test(value)) return "happy";
   if (/(无语|無語|生气|生氣|angry|annoy|speechless)/.test(value)) return "annoyed";
   if (/(呆住|惊讶|驚訝|震惊|surprise|stun)/.test(value)) return "surprised";
+  if (/(害羞|脸红|臉紅|shy|blush)/.test(value)) return "shy";
+  if (/(难过|難過|悲伤|悲傷|伤心|傷心|sad)/.test(value)) return "sad";
+  if (/(哭泣|流泪|流淚|哭|cry|tear)/.test(value)) return "cry";
+  if (/(困倦|困了|睡觉|睡覺|睡|sleepy|drowsy|yawn)/.test(value)) return "sleepy";
+  if (/(疑惑|困惑|不解|confused|puzzled)/.test(value)) return "confused";
+  if (/(兴奋|興奮|激动|激動|excited)/.test(value)) return "excited";
+  if (/(说话|說話|开口|開口|talk|speaking)/.test(value)) return "talking";
+  if (/(挥手|揮手|招手|wave)/.test(value)) return "motion-wave";
+  if (/(喝茶|喝水|饮用|飲用|drink)/.test(value)) return "motion-drink";
+  if (/(吃东西|吃東西|进食|進食|eat)/.test(value)) return "motion-eat";
+  if (/(跳跃|跳躍|跳起|jump)/.test(value)) return "motion-jump";
+  if (/(点头|點頭|nod)/.test(value)) return "motion-nod";
+  if (/(摇头|搖頭|shake.?head)/.test(value)) return "motion-shake";
+  if (/(鞠躬|bow)/.test(value)) return "motion-bow";
   return null;
+}
+
+function customExpressionId(index: number) { return `custom-${index + 1}`; }
+
+function visualStateKind(name: string): OCExpressionOption["kind"] {
+  return /(动作|動作|挥|揮|招手|喝|吃|跳|转头|轉頭|点头|點頭|摇头|搖頭|鞠躬|摸|抱|拍|走|跑|坐下|躺|拿|举|舉|扔|踢|舞|攻击|攻擊|wave|drink|eat|jump|turn|nod|shake|bow|touch|hug|pat|walk|run|sit|lie|hold|throw|kick|dance|attack|talk|speaking|说话|說話)/i.test(name)
+    ? "motion"
+    : "expression";
 }
 
 const PSD_MAX_FILE_BYTES = 160 * 1024 * 1024;
@@ -204,11 +232,16 @@ export async function parsePsdFile(file: File): Promise<OCAnimationPack> {
     if (width * height > PSD_MAX_CANVAS_PIXELS) throw new Error("PSD 画布过大，请将总像素控制在 3200 万以内。");
 
     const rootLayers = psd.children ?? [];
-    const expressionGroups = rootLayers.flatMap((layer) => {
-      const variant = layer.children?.length ? expressionVariantFromName(layer.name ?? "") : null;
-      return variant && layer.hidden !== true ? [{ layer, variant }] : [];
+    const rootGroups = rootLayers.filter((layer) => layer.children?.length && layer.hidden !== true);
+    const recognizedGroups = rootGroups.flatMap((layer) => {
+      const variant = expressionVariantFromName(layer.name ?? "");
+      return variant ? [{ layer, variant }] : [];
     });
-    const hasExpressionGroups = new Set(expressionGroups.map(({ variant }) => variant)).size >= 2;
+    const recognizedVariants = new Set(recognizedGroups.map(({ variant }) => variant));
+    const hasExpressionGroups = recognizedVariants.size >= 2 || (recognizedVariants.has("idle") && rootGroups.length >= 2);
+    const expressionGroups = hasExpressionGroups
+      ? rootGroups.map((layer, index) => ({ layer, variant: expressionVariantFromName(layer.name ?? "") ?? customExpressionId(index) }))
+      : recognizedGroups;
     const leaves = visiblePsdLeaves(rootLayers).reverse();
     if (!leaves.length) throw new Error("PSD 中没有找到可见图层。");
     if (!hasExpressionGroups && leaves.length > PSD_MAX_LAYERS) throw new Error(`PSD 有 ${leaves.length} 个可见图层，基础版最多支持 ${PSD_MAX_LAYERS} 个。`);
@@ -232,7 +265,10 @@ export async function parsePsdFile(file: File): Promise<OCAnimationPack> {
           layers.push({ id: "psd-common", name: "公用图层", role: "static", zIndex: -1, anchorX: 50, anchorY: 72, dataUrl });
         }
       }
-      const priority: OCExpressionVariant[] = ["idle", "blink", "happy", "surprised", "annoyed"];
+      const priority: OCExpressionVariant[] = [
+        "idle", "blink", "happy", "shy", "surprised", "annoyed", "sad", "cry", "sleepy", "confused", "excited", "talking",
+        ...expressionGroups.map(({ variant }) => variant),
+      ].filter((variant, index, all) => all.indexOf(variant) === index);
       for (const [index, variant] of priority.entries()) {
         const group = selectedGroups.get(variant);
         if (!group) continue;
@@ -347,4 +383,15 @@ export function packSummary(pack: OCAnimationPack) {
   const expressions = new Set(pack.layers.map((layer) => layer.variant).filter(Boolean));
   if (expressions.size) return `${pack.layers.length} 个合成图层 · ${expressions.size} 组表情动作`;
   return `${pack.layers.length} 个图层 · ${animated.size} 类基础动效`;
+}
+
+export function expressionOptions(pack: OCAnimationPack | null): OCExpressionOption[] {
+  if (!pack) return [];
+  const options = new Map<string, OCExpressionOption>();
+  for (const layer of pack.layers) {
+    if (!layer.variant || options.has(layer.variant)) continue;
+    const label = layer.name || layer.variant;
+    options.set(layer.variant, { id: layer.variant, label, kind: visualStateKind(`${layer.variant} ${label}`) });
+  }
+  return Array.from(options.values());
 }

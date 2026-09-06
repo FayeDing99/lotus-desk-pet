@@ -169,12 +169,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .pet-motion.is-happy .oc-layer[data-variant="happy"], .pet-motion.is-shy .oc-layer[data-variant="happy"] { opacity: 1; }
 .pet-motion.is-poked .oc-layer[data-variant="surprised"] { opacity: 1; }
 .pet-motion.is-annoyed .oc-layer[data-variant="annoyed"] { opacity: 1; }
+.character-stage.is-layered.has-active-expression .oc-layer[data-variant] { opacity: 0; animation: none; }
+.character-stage.is-layered.has-active-expression .oc-layer[data-variant].is-expression-active { opacity: 1; animation: none; }
 .pet-motion.is-pressed { animation: none; transform: translateY(3px) rotate(-0.25deg) scale(0.982, 1.008); filter: drop-shadow(0 7px 8px rgba(53, 76, 87, 0.11)) brightness(1.018); }
 .pet-motion.is-poked { animation: poke-reaction 980ms var(--ease-pop); }
 .pet-motion.is-happy { animation: happy-reaction 900ms var(--ease-pop); }
 .pet-motion.is-dragging { animation: none; transform: translateY(-8px) rotate(1.3deg) scale(1.015); }
 .pet-motion.is-living { animation: living-glance 2.6s cubic-bezier(0.16, 1, 0.3, 1); }
 .pet-motion.is-talking { animation: talking-nod 560ms ease-in-out 3; }
+.pet-motion.is-context-motion { animation: context-motion 1.7s var(--ease-pop); }
 
 .click-bloom { position: absolute; z-index: 17; left: 43%; top: 45%; width: 12px; height: 12px; opacity: 0; pointer-events: none; }
 .click-bloom i {
@@ -794,6 +797,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 @keyframes living-glance { 0%, 100% { transform: none; } 35% { transform: translateY(-4px) rotate(-1.6deg); } 68% { transform: translateY(-3px) rotate(1.2deg); } }
 @keyframes talking-nod { 0%, 100% { transform: none; } 50% { transform: translateY(3px) rotate(0.5deg); } }
+@keyframes context-motion {
+  0%, 100% { transform: none; }
+  18% { transform: translateY(3px) rotate(-0.7deg) scale(0.985, 1.015); }
+  46% { transform: translateY(-10px) rotate(1.2deg) scale(1.016, 0.988); }
+  70% { transform: translateY(-3px) rotate(-0.45deg) scale(1.004); }
+}
 @keyframes bubble-copy-in { from { opacity: 0.25; transform: translateY(3px); filter: blur(2px); } to { opacity: 1; transform: none; filter: none; } }
 @keyframes send-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(0.91); } }
 @keyframes wheel-ripple-in { 0% { opacity: 0; transform: scale(0.4); } 45% { opacity: 0.8; } 100% { opacity: 0.62; transform: scale(1); } }
