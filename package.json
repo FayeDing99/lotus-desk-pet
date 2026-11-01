@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@fontsource/noto-sans-sc": "^5.3.0",
-    "@fontsource/noto-serif-sc": "^5.3.0",
+    "@fontsource/noto-serif-sc": "^5.3.1",
     "@phosphor-icons/web": "^2.1.2",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-process": "^2.3.1",
